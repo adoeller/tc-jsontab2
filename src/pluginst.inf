@@ -1,0 +1,6 @@
+[plugininstall]
+description=jsontab
+type=wlx
+file=jsontab.wlx
+defaultdir=jsontab2
+Version=2.0.0
