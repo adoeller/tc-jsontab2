@@ -89,6 +89,8 @@ type
     FEditorRow, FEditorColumn: Integer;
     FCurrentRow: Integer;
     FCurrentColumn: Integer;
+    FSearchText: UnicodeString;
+    FSearchFlags, FSearchTab, FSearchRow, FSearchColumn, FSearchCellPos: Integer;
     FTextColor, FBackColor, FBackColor2, FFilterTextColor,
       FFilterBackColor, FCurrentCellColor, FSelectionTextColor,
       FSelectionBackColor, FSplitterColor, FJsonTextColor, FJsonKeyColor,
@@ -1405,6 +1407,7 @@ var
     for K := Left to Right do FVisibleRows[K] := TempRows[K];
   end;
 begin
+  FSearchText := '';
   SetLength(Filters, Length(FFilterEdits));
   for J := 0 to High(FFilterEdits) do
   begin
@@ -1491,45 +1494,67 @@ begin
   SendMessageW(Wnd, EM_SETCHARFORMAT, SCF_SELECTION, LPARAM(@CF));
 end;
 
+function RichEditPositionText(const Text: UnicodeString): UnicodeString;
+var
+  I, N: Integer;
+begin
+  SetLength(Result, Length(Text));
+  I := 1;
+  N := 0;
+  while I <= Length(Text) do
+  begin
+    Inc(N);
+    Result[N] := Text[I];
+    if (Text[I] = #13) and (I < Length(Text)) and (Text[I + 1] = #10) then
+      Inc(I);
+    Inc(I);
+  end;
+  SetLength(Result, N);
+end;
+
 procedure TJsonViewer.HighlightText(const Text: UnicodeString);
 var
   I, J, K: Integer;
   IsKey, UseBold: Boolean;
+  ScanText: UnicodeString;
 begin
+  { RichEdit stores a displayed CRLF as one selection-position character. }
+  ScanText := RichEditPositionText(Text);
   UseBold := ReadSettingInt('font-use-bold', 0) <> 0;
-  SetTextFormat(FText, 0, Length(Text), FJsonTextColor, False);
+  SetTextFormat(FText, 0, Length(ScanText), FJsonTextColor, False);
   I := 1;
-  while I <= Length(Text) do
+  while I <= Length(ScanText) do
   begin
-    if Text[I] = '"' then
+    if ScanText[I] = '"' then
     begin
       J := I + 1;
-      while J <= Length(Text) do
+      while J <= Length(ScanText) do
       begin
-        if (Text[J] = '"') and ((J = 1) or (Text[J - 1] <> '\')) then Break;
+        if (ScanText[J] = '"') and
+          ((J = 1) or (ScanText[J - 1] <> '\')) then Break;
         Inc(J);
       end;
       K := J + 1;
-      while (K <= Length(Text)) and (Text[K] <= ' ') do Inc(K);
-      IsKey := (K <= Length(Text)) and (Text[K] = ':');
+      while (K <= Length(ScanText)) and (ScanText[K] <= ' ') do Inc(K);
+      IsKey := (K <= Length(ScanText)) and (ScanText[K] = ':');
       SetTextFormat(FText, I - 1, J - I + 1,
         ChooseInt(IsKey, FJsonKeyColor, FJsonStringColor), IsKey and UseBold);
       I := J + 1;
       Continue;
     end;
-    if Copy(Text, I, 4) = 'true' then
+    if Copy(ScanText, I, 4) = 'true' then
     begin
       SetTextFormat(FText, I - 1, 4, FJsonBooleanColor, False);
       Inc(I, 4);
       Continue;
     end;
-    if Copy(Text, I, 5) = 'false' then
+    if Copy(ScanText, I, 5) = 'false' then
     begin
       SetTextFormat(FText, I - 1, 5, FJsonBooleanColor, False);
       Inc(I, 5);
       Continue;
     end;
-    if Copy(Text, I, 4) = 'null' then
+    if Copy(ScanText, I, 4) = 'null' then
     begin
       SetTextFormat(FText, I - 1, 4, FJsonNullColor, UseBold);
       Inc(I, 4);
@@ -1978,42 +2003,189 @@ end;
 
 function TJsonViewer.Search(const S: UnicodeString; Flags: Integer): Integer;
 var
-  I, J, StartRow, Rows, Cols: Integer;
-  Buf: array[0..8191] of WideChar;
-  Hay, Needle: UnicodeString;
+  I, J, P, StartPos, Rows, Cols, TabNo, RelevantFlags: Integer;
+  SelStart, SelEnd: Integer;
+  Hay, Needle, TextValue: UnicodeString;
+  ResetSearch, Backwards, WasBackwards, DirectionChanged,
+    MatchCase, WholeWords: Boolean;
+
+  function IsWordChar(C: WideChar): Boolean;
+  begin
+    Result := (C = '_') or (C >= '0') and (C <= '9') or
+      (C >= 'A') and (C <= 'Z') or (C >= 'a') and (C <= 'z') or
+      (Ord(C) >= 128);
+  end;
+
+  function ValidWholeWord(const Value: UnicodeString; PosNo: Integer): Boolean;
+  var
+    AfterPos: Integer;
+  begin
+    if not WholeWords then Exit(True);
+    AfterPos := PosNo + Length(Needle);
+    Result := ((PosNo = 1) or not IsWordChar(Value[PosNo - 1])) and
+      ((AfterPos > Length(Value)) or not IsWordChar(Value[AfterPos]));
+  end;
+
+  function FindForward(const Value: UnicodeString; FromPos: Integer): Integer;
+  var
+    Tail: UnicodeString;
+  begin
+    Result := 0;
+    if FromPos < 1 then FromPos := 1;
+    while FromPos <= Length(Value) do
+    begin
+      Tail := Copy(Value, FromPos, MaxInt);
+      P := Pos(Needle, Tail);
+      if P = 0 then Exit;
+      Result := FromPos + P - 1;
+      if ValidWholeWord(Value, Result) then Exit;
+      FromPos := Result + 1;
+    end;
+  end;
+
+  function FindBackward(const Value: UnicodeString; BeforePos: Integer): Integer;
+  var
+    Candidate, FromPos: Integer;
+  begin
+    Result := 0;
+    Candidate := 0;
+    FromPos := 1;
+    if BeforePos > Length(Value) + 1 then BeforePos := Length(Value) + 1;
+    while FromPos < BeforePos do
+    begin
+      P := Pos(Needle, Copy(Value, FromPos, BeforePos - FromPos));
+      if P = 0 then Break;
+      P := FromPos + P - 1;
+      if ValidWholeWord(Value, P) then Candidate := P;
+      FromPos := P + 1;
+    end;
+    Result := Candidate;
+  end;
+
+  function SearchValue(const Value: UnicodeString; FromPos: Integer): Integer;
+  begin
+    if Backwards then Result := FindBackward(Value, FromPos)
+    else Result := FindForward(Value, FromPos);
+  end;
+
+  procedure SelectGridResult(Row, Column: Integer);
+  begin
+    ListView_SetItemState(FGrid, -1, 0, LVIS_SELECTED or LVIS_FOCUSED);
+    ListView_SetItemState(FGrid, Row, LVIS_SELECTED or LVIS_FOCUSED,
+      LVIS_SELECTED or LVIS_FOCUSED);
+    ListView_EnsureVisible(FGrid, Row, False);
+    SetCurrentCell(Row, Column);
+    SetFocus(FGrid);
+  end;
 begin
   Result := 0;
+  if S = '' then Exit;
+  TabNo := TabCtrl_GetCurSel(FTab);
+  Backwards := (Flags and lcs_backwards) <> 0;
+  WasBackwards := (FSearchFlags and lcs_backwards) <> 0;
+  DirectionChanged := (FSearchText = S) and (FSearchTab = TabNo) and
+    (Backwards <> WasBackwards);
+  RelevantFlags := Flags and (lcs_matchcase or lcs_wholewords);
+  ResetSearch := (FSearchText <> S) or
+    ((FSearchFlags and (lcs_matchcase or lcs_wholewords)) <> RelevantFlags) or
+    (FSearchTab <> TabNo) or
+    (((Flags and lcs_findfirst) <> 0) and not DirectionChanged);
+  MatchCase := (Flags and lcs_matchcase) <> 0;
+  WholeWords := (Flags and lcs_wholewords) <> 0;
   Needle := S;
-  if (Flags and lcs_matchcase) = 0 then Needle := LowerCase(Needle);
-  if TabCtrl_GetCurSel(FTab) = 1 then
+  if not MatchCase then Needle := LowerCase(Needle);
+  FSearchText := S;
+  FSearchFlags := RelevantFlags or ChooseInt(Backwards, lcs_backwards, 0);
+  FSearchTab := TabNo;
+  if TabNo = 1 then
   begin
-    GetWindowTextW(FText, Buf, Length(Buf));
-    Hay := Buf;
-    if (Flags and lcs_matchcase) = 0 then Hay := LowerCase(Hay);
-    I := Pos(Needle, Hay);
-    if I > 0 then SendMessageW(FText, EM_SETSEL, I - 1, I - 1 + Length(S))
+    SetLength(TextValue, GetWindowTextLengthW(FText));
+    if TextValue <> '' then GetWindowTextW(FText, PWideChar(TextValue), Length(TextValue) + 1);
+    Hay := RichEditPositionText(TextValue);
+    if not MatchCase then Hay := LowerCase(Hay);
+    SelStart := 0;
+    SelEnd := 0;
+    SendMessageW(FText, EM_GETSEL, WPARAM(@SelStart), LPARAM(@SelEnd));
+    if ResetSearch then
+    begin
+      if Backwards then StartPos := Length(Hay) + 1 else StartPos := 1;
+    end
+    else if Backwards then StartPos := SelStart + 1
+    else StartPos := SelEnd + 1;
+    I := SearchValue(Hay, StartPos);
+    if I > 0 then
+    begin
+      SendMessageW(FText, EM_SETSEL, I - 1, I - 1 + Length(S));
+      SendMessageW(FText, EM_SCROLLCARET, 0, 0);
+      SetFocus(FText);
+    end
     else MessageBeep(0);
     Exit;
   end;
   Rows := ListView_GetItemCount(FGrid);
   Cols := Header_GetItemCount(ListView_GetHeader(FGrid));
-  StartRow := 0;
-  for I := StartRow to Rows - 1 do
-    for J := 0 to Cols - 1 do
+  if (Rows = 0) or (Cols = 0) then Exit;
+  if ResetSearch then
+  begin
+    if Backwards then
     begin
-      Buf[0] := #0;
-      GetCellTextW(FGrid, I, J, @Buf[0], Length(Buf));
-      Hay := Buf;
-      if (Flags and lcs_matchcase) = 0 then Hay := LowerCase(Hay);
-      if Pos(Needle, Hay) > 0 then
+      FSearchRow := Rows - 1;
+      FSearchColumn := Cols - 1;
+      FSearchCellPos := MaxInt;
+    end
+    else
+    begin
+      FSearchRow := 0;
+      FSearchColumn := 0;
+      FSearchCellPos := 1;
+    end;
+  end;
+  if DirectionChanged and not ResetSearch then
+  begin
+    if Backwards then Dec(FSearchCellPos, Length(S))
+    else Inc(FSearchCellPos, Length(S));
+  end;
+  I := FSearchRow;
+  J := FSearchColumn;
+  while (I >= 0) and (I < Rows) do
+  begin
+    while (J >= 0) and (J < Cols) do
+    begin
+      TextValue := FAllRows[FVisibleRows[I], J];
+      Hay := TextValue;
+      if not MatchCase then Hay := LowerCase(Hay);
+      P := SearchValue(Hay, FSearchCellPos);
+      if P > 0 then
       begin
-        ListView_SetItemState(FGrid, -1, 0, LVIS_SELECTED);
-        ListView_SetItemState(FGrid, I, LVIS_SELECTED or LVIS_FOCUSED,
-          LVIS_SELECTED or LVIS_FOCUSED);
-        ListView_EnsureVisible(FGrid, I, False);
+        SelectGridResult(I, J);
+        FSearchRow := I;
+        FSearchColumn := J;
+        if Backwards then FSearchCellPos := P
+        else FSearchCellPos := P + Length(S);
         Exit;
       end;
+      if Backwards then
+      begin
+        Dec(J);
+        FSearchCellPos := MaxInt;
+      end
+      else
+      begin
+        Inc(J);
+        FSearchCellPos := 1;
+      end;
     end;
+    if Backwards then
+    begin
+      Dec(I);
+      J := Cols - 1;
+    end
+    else
+    begin
+      Inc(I);
+      J := 0;
+    end;
+  end;
   MessageBeep(0);
 end;
 
