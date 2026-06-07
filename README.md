@@ -1,5 +1,7 @@
 # JSON Tab WLX for Lazarus/FPC
 
+![json](json.png)
+
 JSON Tab WLX is a native Windows Lister plugin for
 [Total Commander](https://www.ghisler.com/) that displays JSON documents as a
 combined tree, table, and formatted text view.
