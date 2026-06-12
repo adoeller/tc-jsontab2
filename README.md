@@ -1,7 +1,5 @@
 # JSON Tab WLX for Lazarus/FPC
 
-![json](json.png)
-
 JSON Tab WLX is a native Windows Lister plugin for
 [Total Commander](https://www.ghisler.com/) that displays JSON documents as a
 combined tree, table, and formatted text view.
@@ -47,7 +45,7 @@ This Lazarus/FPC version adds or substantially changes:
 - Automatically sized columns:
   - Measures the header and the first 1,000 visible rows
   - Uses the header width as the minimum
-  - Limits the width to twice the header width
+  - Limits the width to three times the header width
 - Hide individual columns or restore all columns
 - Copy cell, selected rows, column, JSONPath, or inferred JSON
 - Search in grid and text views
@@ -141,8 +139,16 @@ lazbuild jsontab.lpi --build-mode="Release 32"
 
 ## Configuration
 
-Settings are read from the Total Commander default plugin INI path supplied to
-the WLX plugin. If no path is supplied, an INI file beside the plugin is used.
+If an INI file exists beside the WLX plugin, it takes precedence over the
+default plugin INI path supplied by Total Commander. Otherwise, the supplied
+path is used. If Total Commander supplies no path, the INI beside the plugin is
+used and created when settings are written.
+
+Inline comments are supported when separated from the value by whitespace:
+
+```ini
+font-size=16 ; use a larger font
+```
 Settings belong in the `[jsontab]` section.
 
 The plugin stores the selected tab, splitter position, filter-row visibility,
