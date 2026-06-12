@@ -20,7 +20,179 @@ function JsonPretty(Data: TJSONData): UnicodeString;
 
 implementation
 
+type
+  { Float number that remembers the exact literal from the source file, so
+    values like 88.2 or 89.0 are displayed and saved byte-for-byte as read
+    instead of being re-formatted from the (lossy) double value. }
+  TSourceFloatNumber = class(TJSONFloatNumber)
+  private
+    FSource: TJSONStringType;
+  protected
+    function GetAsString: TJSONStringType; override;
+    procedure SetAsString(const AValue: TJSONStringType); override;
+    procedure SetAsBoolean(const AValue: Boolean); override;
+    procedure SetAsFloat(const AValue: TJSONFloat); override;
+    procedure SetAsInteger(const AValue: Integer); override;
+    procedure SetAsInt64(const AValue: Int64); override;
+    procedure SetAsQword(const AValue: QWord); override;
+    procedure SetValue(const AValue: TJSONVariant); override;
+  public
+    procedure AfterConstruction; override;
+    procedure Clear; override;
+    function Clone: TJSONData; override;
+  end;
+
+  { Parser that hands the raw number token to TSourceFloatNumber. The base
+    reader reports the literal via NumberValue right before FloatValue
+    creates the node, so the literal is passed through PendingNumberLiteral. }
+  TSourceJSONParser = class(TJSONParser)
+  protected
+    procedure NumberValue(const AValue: TJSONStringType); override;
+    procedure FloatValue(const AValue: Double); override;
+    procedure IntegerValue(const AValue: Integer); override;
+    procedure Int64Value(const AValue: Int64); override;
+    procedure QWordValue(const AValue: QWord); override;
+  end;
+
+var
+  PendingNumberLiteral: TJSONStringType;
+
+procedure TSourceFloatNumber.AfterConstruction;
+begin
+  inherited AfterConstruction;
+  FSource := PendingNumberLiteral;
+  PendingNumberLiteral := '';
+end;
+
+function TSourceFloatNumber.GetAsString: TJSONStringType;
+begin
+  if FSource <> '' then
+    Result := FSource
+  else
+    Result := inherited GetAsString;
+end;
+
+procedure TSourceFloatNumber.SetAsString(const AValue: TJSONStringType);
+begin
+  inherited SetAsString(AValue);
+  FSource := AValue;
+end;
+
+procedure TSourceFloatNumber.SetAsBoolean(const AValue: Boolean);
+begin
+  inherited SetAsBoolean(AValue);
+  FSource := '';
+end;
+
+procedure TSourceFloatNumber.SetAsFloat(const AValue: TJSONFloat);
+begin
+  inherited SetAsFloat(AValue);
+  FSource := '';
+end;
+
+procedure TSourceFloatNumber.SetAsInteger(const AValue: Integer);
+begin
+  inherited SetAsInteger(AValue);
+  FSource := '';
+end;
+
+procedure TSourceFloatNumber.SetAsInt64(const AValue: Int64);
+begin
+  inherited SetAsInt64(AValue);
+  FSource := '';
+end;
+
+procedure TSourceFloatNumber.SetAsQword(const AValue: QWord);
+begin
+  inherited SetAsQword(AValue);
+  FSource := '';
+end;
+
+procedure TSourceFloatNumber.SetValue(const AValue: TJSONVariant);
+begin
+  inherited SetValue(AValue);
+  FSource := '';
+end;
+
+procedure TSourceFloatNumber.Clear;
+begin
+  inherited Clear;
+  FSource := '';
+end;
+
+function TSourceFloatNumber.Clone: TJSONData;
+begin
+  Result := inherited Clone;
+  if Result is TSourceFloatNumber then
+    TSourceFloatNumber(Result).FSource := FSource;
+end;
+
+procedure TSourceJSONParser.NumberValue(const AValue: TJSONStringType);
+begin
+  inherited NumberValue(AValue);
+  PendingNumberLiteral := AValue;
+end;
+
+procedure TSourceJSONParser.FloatValue(const AValue: Double);
+begin
+  inherited FloatValue(AValue);
+  PendingNumberLiteral := '';
+end;
+
+procedure TSourceJSONParser.IntegerValue(const AValue: Integer);
+begin
+  inherited IntegerValue(AValue);
+  PendingNumberLiteral := '';
+end;
+
+procedure TSourceJSONParser.Int64Value(const AValue: Int64);
+begin
+  inherited Int64Value(AValue);
+  PendingNumberLiteral := '';
+end;
+
+procedure TSourceJSONParser.QWordValue(const AValue: QWord);
+begin
+  inherited QWordValue(AValue);
+  PendingNumberLiteral := '';
+end;
+
 function TryParse(const S: UTF8String; out Data: TJSONData): Boolean; forward;
+
+function TryParseJsonLines(const S: UTF8String; out Data: TJSONData): Boolean;
+var
+  I, StartPos: Integer;
+  Line: UTF8String;
+  Item: TJSONData;
+  Arr: TJSONArray;
+begin
+  Data := nil;
+  Arr := TJSONArray.Create;
+  try
+    StartPos := 1;
+    I := 1;
+    while I <= Length(S) + 1 do
+    begin
+      if (I > Length(S)) or (S[I] = #10) then
+      begin
+        Line := Trim(Copy(S, StartPos, I - StartPos));
+        if Line <> '' then
+        begin
+          if not TryParse(Line, Item) then Exit(False);
+          Arr.Add(Item);
+        end;
+        StartPos := I + 1;
+      end;
+      Inc(I);
+    end;
+    if Arr.Count = 0 then Exit(False);
+    Data := Arr;
+    Arr := nil;
+    Result := True;
+  finally
+    Arr.Free;
+  end;
+end;
 
 function IsValidUtf8(const B: TBytes): Boolean;
 var
@@ -152,7 +324,7 @@ var
 begin
   Data := nil;
   try
-    P := TJSONParser.Create(S, [joUTF8, joComments, joBOMCheck]);
+    P := TSourceJSONParser.Create(S, [joUTF8, joComments, joBOMCheck]);
     try
       Data := P.Parse;
     finally
@@ -194,7 +366,10 @@ begin
       deUtf16BE: EncodingName := 'UTF-16BE';
     end;
     S := BytesToUtf8(B, E);
-    Result := TryParseRecovered(S, ParseMode, Root, Malformed);
+    if SameText(ExtractFileExt(FileName), '.jsonl') then
+      Result := TryParseJsonLines(S, Root)
+    else
+      Result := TryParseRecovered(S, ParseMode, Root, Malformed);
   except
     FreeAndNil(Root);
   end;
@@ -216,13 +391,35 @@ end;
 function JsonNumberText(Data: TJSONData): UnicodeString;
 var
   FS: TFormatSettings;
+  D, RoundTrip: Double;
+  Digits: Integer;
+  S, Fixed: string;
 begin
+  { Numbers read from a file keep their original literal untouched. }
+  if (Data is TSourceFloatNumber) and (TSourceFloatNumber(Data).FSource <> '') then
+    Exit(UnicodeString(TSourceFloatNumber(Data).FSource));
   if Data is TJSONFloatNumber then
   begin
     FS := DefaultFormatSettings;
     FS.DecimalSeparator := '.';
-    Result := UnicodeString(FormatFloat('0.###############',
-      TJSONFloatNumber(Data).AsFloat, FS));
+    D := TJSONFloatNumber(Data).AsFloat;
+    { Shortest decimal representation that parses back to the exact same
+      double, so values like 88.2 do not show up as 88.200000000000003. }
+    S := '';
+    for Digits := 1 to 15 do
+    begin
+      S := FloatToStrF(D, ffGeneral, Digits, 0, FS);
+      if TryStrToFloat(S, RoundTrip, FS) and (RoundTrip = D) then Break;
+    end;
+    if not (TryStrToFloat(S, RoundTrip, FS) and (RoundTrip = D)) then
+    begin
+      { Needs 16-17 significant digits; FloatToStrF caps doubles at 15,
+        but the fixed-point format can still express these exactly. }
+      Fixed := FormatFloat('0.###############', D, FS);
+      if TryStrToFloat(Fixed, RoundTrip, FS) and (RoundTrip = D) then
+        S := Fixed;
+    end;
+    Result := UnicodeString(S);
     { Preserve the distinction between JSON integers and floating-point
       numbers when the fractional part happens to be zero. }
     if (Pos('.', Result) = 0) and (Pos('E', UpperCase(Result)) = 0) then
@@ -302,6 +499,54 @@ begin
   Result := JsonPrettyLevel(Data, 0);
 end;
 
+function JsonCompact(Data: TJSONData): UnicodeString;
+var
+  I: Integer;
+  Obj: TJSONObject;
+begin
+  case Data.JSONType of
+    jtArray:
+      begin
+        Result := '[';
+        for I := 0 to Data.Count - 1 do
+        begin
+          if I > 0 then Result := Result + ',';
+          Result := Result + JsonCompact(Data.Items[I]);
+        end;
+        Result := Result + ']';
+      end;
+    jtObject:
+      begin
+        Obj := TJSONObject(Data);
+        Result := '{';
+        for I := 0 to Obj.Count - 1 do
+        begin
+          if I > 0 then Result := Result + ',';
+          Result := Result + QuoteJson(Obj.Names[I]) + ':' +
+            JsonCompact(Obj.Items[I]);
+        end;
+        Result := Result + '}';
+      end;
+    jtString: Result := QuoteJson(Data.AsString);
+    jtNumber: Result := JsonNumberText(Data);
+  else
+    Result := UTF8Decode(Data.AsJSON);
+  end;
+end;
+
+function JsonLinesText(Root: TJSONData): UnicodeString;
+var
+  I: Integer;
+begin
+  if Root.JSONType <> jtArray then Exit(JsonCompact(Root));
+  Result := '';
+  for I := 0 to Root.Count - 1 do
+  begin
+    if I > 0 then Result := Result + LineEnding;
+    Result := Result + JsonCompact(Root.Items[I]);
+  end;
+end;
+
 function SaveJsonFile(const FileName, EncodingName: UnicodeString;
   Root: TJSONData): Boolean;
 var
@@ -315,7 +560,10 @@ begin
   Result := False;
   if not Assigned(Root) then Exit;
   try
-    Text := JsonPretty(Root);
+    if SameText(ExtractFileExt(FileName), '.jsonl') then
+      Text := JsonLinesText(Root)
+    else
+      Text := JsonPretty(Root);
     if EncodingName = 'ANSI' then
     begin
       N := WideCharToMultiByte(CP_ACP, 0, PWideChar(Text), Length(Text),
@@ -362,5 +610,9 @@ begin
     Result := False;
   end;
 end;
+
+initialization
+  { Make CreateJSON (used by the parser) build literal-preserving floats. }
+  SetJSONInstanceType(jitNumberFloat, TSourceFloatNumber);
 
 end.
