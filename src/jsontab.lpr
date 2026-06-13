@@ -9,6 +9,7 @@ uses
   listplug in 'listplug.pas',
   uSettings in 'uSettings.pas',
   uJsonModel in 'uJsonModel.pas',
+  uDecimalAlign in 'uDecimalAlign.pas',
   uViewer in 'uViewer.pas';
 
 exports

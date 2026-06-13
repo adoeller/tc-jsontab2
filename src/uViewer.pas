@@ -16,7 +16,7 @@ implementation
 
 uses
   Messages, CommCtrl, RichEdit, ShellApi, SysUtils, Classes, fpjson,
-  uJsonModel, uSettings, listplug;
+  uJsonModel, uSettings, uDecimalAlign, listplug;
 
 const
   CLASS_NAME = 'JsonTabFpcViewer';
@@ -27,8 +27,9 @@ const
   IDC_STATUS = 105;
   IDC_CELL_EDITOR = 106;
   IDC_FILTER_BASE = 1000;
-  SPLITTER_WIDTH = 5;
+  SPLITTER_WIDTH = 8;
   WMU_TREE_CHANGED = WM_USER + 1;
+  IDT_HIGHLIGHT = 1;
   IDM_COPY = 5000;
   IDM_COPY_ROWS = 5001;
   IDM_COPY_COLUMN = 5002;
@@ -46,11 +47,16 @@ type
   TUnicodeRows = array of TUnicodeRow;
   TJsonDataArray = array of TJSONData;
   TIntegerArray = array of Integer;
+  TBooleanArray = array of Boolean;
   TNMLVDispInfoW = record
     hdr: NMHDR;
     item: LVITEMW;
   end;
   PNMLVDispInfoW = ^TNMLVDispInfoW;
+  TTextRangeW = record
+    chrg: CHARRANGE;
+    lpstrText: PWideChar;
+  end;
 
 function CompareStringEx(lpLocaleName: PWideChar; dwCmpFlags: DWORD;
   lpString1: PWideChar; cchCount1: Integer; lpString2: PWideChar;
@@ -62,16 +68,17 @@ type
   private
     FWnd, FTree, FTab, FGrid, FText, FStatus, FCellEditor: HWND;
     FTabOldProc, FGridOldProc, FTreeOldProc, FTextOldProc,
-      FEditorOldProc: WNDPROC;
+      FEditorOldProc, FFilterOldProc: WNDPROC;
     FRoot: TJSONData;
     FFileName: UnicodeString;
     FEncoding: UnicodeString;
     FDirty: Boolean;
     FMalformed: Boolean;
     FSplitter: Integer;
+    FSplitterDragOffset: Integer;
     FDragging: Boolean;
     FDark: Boolean;
-    FFont: HFONT;
+    FFont, FHeaderFont, FTabFont: HFONT;
     FFontSize: Integer;
     FNodeMap: TList;
     FPaths: TStringList;
@@ -84,8 +91,15 @@ type
     FVisibleRows: TIntegerArray;
     FFilterEdits: array of HWND;
     FFilterVisible: Boolean;
+    FDecimalAlign: Boolean;
+    FDecimalAnchors: TIntegerArray;
+    FColumnHasDecimals: TBooleanArray;
     FEditMode: Boolean;
     FClosingEditor: Boolean;
+    FHighlighting: Boolean;
+    FHighlightFirstLine: Integer;
+    FHighlightPending: Boolean;
+    FTextNeedsUpdate: Boolean;
     FEditorRow, FEditorColumn: Integer;
     FCurrentRow: Integer;
     FCurrentColumn: Integer;
@@ -116,11 +130,14 @@ type
     procedure LayoutFilters;
     procedure ApplyFilters;
     procedure UpdateVirtualGrid;
+    function CustomDraw(Draw: PNMLVCustomDraw): LRESULT;
+    procedure UpdateDecimalAnchors;
     procedure AutoSizeVisibleColumns;
     procedure HideColumn(Column: Integer);
     procedure ShowAllColumns;
     procedure SetFontSize(NewSize: Integer);
-    procedure HighlightText(const Text: UnicodeString);
+    procedure HighlightVisibleText;
+    procedure ScheduleHighlight;
     procedure OpenCurrentUrl;
     procedure SelectTreeData(Data: TJSONData);
     procedure NavigateGridRowToTree(Row: Integer);
@@ -136,6 +153,7 @@ type
     procedure UpdateEditStatus(const MessageText: UnicodeString = '');
     function ForwardHostHotKey(Key: WPARAM): Boolean;
     function SaveChanges: Boolean;
+    procedure ConfirmSaveBeforeClose;
     procedure CaptureFilters(Filters: TStringList);
     procedure RestoreFilters(Filters: TStringList);
   public
@@ -151,6 +169,12 @@ var
 function ChooseInt(Condition: Boolean; A, B: Integer): Integer;
 begin
   if Condition then Result := A else Result := B;
+end;
+
+function DarkenColor(Color: COLORREF): COLORREF;
+begin
+  Result := RGB(GetRValue(Color) * 85 div 100,
+    GetGValue(Color) * 85 div 100, GetBValue(Color) * 85 div 100);
 end;
 
 function ConfiguredFontWeight: Integer;
@@ -231,14 +255,84 @@ end;
 function GridWndProc(Wnd: HWND; Msg: UINT; WParam: WPARAM; LParam: LPARAM): LRESULT; stdcall;
 var
   V: TJsonViewer;
+  Hdr: PNMHDR;
+  Draw: PNMCUSTOMDRAW;
+  Item: HDITEMW;
+  TextBuffer: array[0..4095] of WideChar;
+  TextRect: TRect;
+  Brush: HBRUSH;
+  Pen, OldPen: HPEN;
+  OldFont: HFONT;
 begin
   V := ViewerFromWnd(GetParent(GetParent(Wnd)));
+  if Assigned(V) and (Msg = WM_NOTIFY) then
+  begin
+    Hdr := PNMHDR(LParam);
+    if (Hdr^.hwndFrom = ListView_GetHeader(Wnd)) and
+      (Integer(Hdr^.code) = NM_CUSTOMDRAW) then
+    begin
+      Draw := PNMCUSTOMDRAW(LParam);
+      if Draw^.dwDrawStage = CDDS_PREPAINT then Exit(CDRF_NOTIFYITEMDRAW);
+      if Draw^.dwDrawStage = CDDS_ITEMPREPAINT then
+      begin
+        Brush := CreateSolidBrush(DarkenColor(V.FFilterBackColor));
+        FillRect(Draw^.hdc, Draw^.rc, Brush);
+        DeleteObject(Brush);
+        Pen := CreatePen(PS_SOLID, 1, V.FSplitterColor);
+        OldPen := HPEN(SelectObject(Draw^.hdc, Pen));
+        MoveToEx(Draw^.hdc, Draw^.rc.Right - 1, Draw^.rc.Top, nil);
+        LineTo(Draw^.hdc, Draw^.rc.Right - 1, Draw^.rc.Bottom);
+        MoveToEx(Draw^.hdc, Draw^.rc.Left, Draw^.rc.Bottom - 1, nil);
+        LineTo(Draw^.hdc, Draw^.rc.Right, Draw^.rc.Bottom - 1);
+        SelectObject(Draw^.hdc, OldPen);
+        DeleteObject(Pen);
+        FillChar(Item, SizeOf(Item), 0);
+        TextBuffer[0] := #0;
+        Item.mask := HDI_TEXT;
+        Item.pszText := @TextBuffer[0];
+        Item.cchTextMax := Length(TextBuffer);
+        SendMessageW(Hdr^.hwndFrom, HDM_GETITEMW, Draw^.dwItemSpec,
+          PtrInt(@Item));
+        SetBkMode(Draw^.hdc, TRANSPARENT);
+        SetTextColor(Draw^.hdc, V.FFilterTextColor);
+        OldFont := HFONT(SelectObject(Draw^.hdc, V.FHeaderFont));
+        TextRect := Draw^.rc;
+        Inc(TextRect.Left, 6);
+        Dec(TextRect.Right, 4);
+        DrawTextW(Draw^.hdc, @TextBuffer[0], -1, TextRect,
+          DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_END_ELLIPSIS);
+        SelectObject(Draw^.hdc, OldFont);
+        Exit(CDRF_SKIPDEFAULT);
+      end;
+    end;
+  end;
   if Assigned(V) and ((Msg = WM_HSCROLL) or (Msg = WM_VSCROLL) or
     (Msg = WM_MOUSEWHEEL)) then
     V.CloseCellEdit(True);
   if Assigned(V) and (Msg = WM_KEYDOWN) and V.HandleHotKey(WParam) then Exit(0);
   if Assigned(V) and Assigned(V.FGridOldProc) then
     Result := CallWindowProcW(V.FGridOldProc, Wnd, Msg, WParam, LParam)
+  else
+    Result := DefWindowProcW(Wnd, Msg, WParam, LParam);
+end;
+
+function FilterWndProc(Wnd: HWND; Msg: UINT; WParam: WPARAM;
+  LParam: LPARAM): LRESULT; stdcall;
+var
+  V: TJsonViewer;
+begin
+  V := ViewerFromWnd(GetParent(GetParent(Wnd)));
+  if Assigned(V) and (Msg = WM_KEYDOWN) then
+  begin
+    if WParam = VK_ESCAPE then
+    begin
+      SetFocus(V.FGrid);
+      Exit(0);
+    end;
+    if V.HandleHotKey(WParam) then Exit(0);
+  end;
+  if Assigned(V) and Assigned(V.FFilterOldProc) then
+    Result := CallWindowProcW(V.FFilterOldProc, Wnd, Msg, WParam, LParam)
   else
     Result := DefWindowProcW(Wnd, Msg, WParam, LParam);
 end;
@@ -258,13 +352,27 @@ end;
 function TextWndProc(Wnd: HWND; Msg: UINT; WParam: WPARAM; LParam: LPARAM): LRESULT; stdcall;
 var
   V: TJsonViewer;
+  NavigationKey: Boolean;
 begin
   V := ViewerFromWnd(GetParent(GetParent(Wnd)));
   if Assigned(V) and (Msg = WM_KEYDOWN) and V.HandleHotKey(WParam) then Exit(0);
+  NavigationKey := (Msg = WM_KEYDOWN) and
+    ((WParam = VK_UP) or (WParam = VK_DOWN) or
+    (WParam = VK_PRIOR) or (WParam = VK_NEXT) or
+    (WParam = VK_HOME) or (WParam = VK_END));
   if Assigned(V) and Assigned(V.FTextOldProc) then
     Result := CallWindowProcW(V.FTextOldProc, Wnd, Msg, WParam, LParam)
   else
     Result := DefWindowProcW(Wnd, Msg, WParam, LParam);
+  { Scrolling must not be recolored synchronously: formatting moves the
+    selection and scroll position around, which fights a scrollbar drag,
+    and the rich edit keeps scrolling after a wheel notch is processed.
+    Defer the highlight until the view has settled. }
+  if Assigned(V) and ((Msg = WM_VSCROLL) or (Msg = WM_MOUSEWHEEL)) then
+    V.ScheduleHighlight
+  else if Assigned(V) and (NavigationKey or (Msg = EM_SCROLLCARET) or
+    (Msg = WM_SIZE) or ((Msg = WM_PAINT) and V.FHighlightPending)) then
+    V.HighlightVisibleText;
 end;
 
 function EditorWndProc(Wnd: HWND; Msg: UINT; WParam: WPARAM; LParam: LPARAM): LRESULT; stdcall;
@@ -299,17 +407,44 @@ var
   Hdr: PNMHDR;
   Cmd: Integer;
   Menu: HMENU;
-  Draw: PNMLVCUSTOMDRAW;
   R: TRect;
 begin
   V := ViewerFromWnd(Wnd);
   case Msg of
     WM_SIZE:
       if Assigned(V) then begin V.Layout; Exit(0); end;
+    WMU_TREE_CHANGED:
+      if Assigned(V) then
+      begin
+        { Deferred from BuildTree: the lister window is now visible so grid
+          content and syntax highlighting are guaranteed to paint correctly. }
+        V.UpdateSelection;
+        if IsWindowVisible(V.FText) then
+        begin
+          V.HighlightVisibleText;
+          SetFocus(V.FText);
+        end
+        else if IsWindowVisible(V.FGrid) then
+          SetFocus(V.FGrid);
+        Exit(0);
+      end;
+    WM_TIMER:
+      if Assigned(V) and (WParam = IDT_HIGHLIGHT) then
+      begin
+        { Recolor until the visible region stops moving, then stop. }
+        if (not IsWindowVisible(V.FText)) or
+          (SendMessageW(V.FText, EM_GETFIRSTVISIBLELINE, 0, 0) =
+            V.FHighlightFirstLine) then
+          KillTimer(Wnd, IDT_HIGHLIGHT)
+        else
+          V.HighlightVisibleText;
+        Exit(0);
+      end;
     WM_LBUTTONDOWN:
       if Assigned(V) and (SmallInt(LoWord(LParam)) >= V.FSplitter) and
-        (SmallInt(LoWord(LParam)) <= V.FSplitter + SPLITTER_WIDTH) then
+        (SmallInt(LoWord(LParam)) < V.FSplitter + SPLITTER_WIDTH) then
       begin
+        V.FSplitterDragOffset := SmallInt(LoWord(LParam)) - V.FSplitter;
         V.FDragging := True;
         SetCapture(Wnd);
         Exit(0);
@@ -317,7 +452,7 @@ begin
     WM_MOUSEMOVE:
       if Assigned(V) and V.FDragging then
       begin
-        V.FSplitter := SmallInt(LoWord(LParam));
+        V.FSplitter := SmallInt(LoWord(LParam)) - V.FSplitterDragOffset;
         V.Layout;
         Exit(0);
       end;
@@ -328,6 +463,19 @@ begin
         ReleaseCapture;
         Exit(0);
       end;
+    WM_CAPTURECHANGED:
+      if Assigned(V) then V.FDragging := False;
+    WM_SETCURSOR:
+      if Assigned(V) and (LoWord(LParam) = HTCLIENT) then
+      begin
+        GetCursorPos(P);
+        ScreenToClient(Wnd, P);
+        if (P.X >= V.FSplitter) and (P.X < V.FSplitter + SPLITTER_WIDTH) then
+        begin
+          SetCursor(LoadCursor(0, IDC_SIZEWE));
+          Exit(1);
+        end;
+      end;
     WM_NOTIFY:
       if Assigned(V) then
       begin
@@ -336,11 +484,16 @@ begin
           V.UpdateSelection
         else if (Hdr^.idFrom = IDC_TAB) and (Integer(Hdr^.code) = TCN_SELCHANGE) then
         begin
-          if TabCtrl_GetCurSel(V.FTab) = 1 then V.SyncGridToText
+          if TabCtrl_GetCurSel(V.FTab) = 1 then
+          begin
+            if V.FTextNeedsUpdate then V.UpdateText(V.FCurrent);
+            V.SyncGridToText;
+          end
           else V.SyncTextToGrid;
           ShowWindow(V.FGrid, ChooseInt(TabCtrl_GetCurSel(V.FTab) = 0, SW_SHOW, SW_HIDE));
           ShowWindow(V.FText, ChooseInt(TabCtrl_GetCurSel(V.FTab) = 1, SW_SHOW, SW_HIDE));
           V.Layout;
+          V.HighlightVisibleText;
         end
         else if (Hdr^.idFrom = IDC_GRID) and (Integer(Hdr^.code) = LVN_COLUMNCLICK) then
         begin
@@ -385,42 +538,12 @@ begin
             V.SetCurrentCell(PNMLISTVIEW(LParam)^.iItem, V.FCurrentColumn);
         end
         else if (Hdr^.idFrom = IDC_GRID) and (Integer(Hdr^.code) = NM_CUSTOMDRAW) then
-        begin
-          Draw := PNMLVCUSTOMDRAW(LParam);
-          if Draw^.nmcd.dwDrawStage = CDDS_PREPAINT then Exit(CDRF_NOTIFYITEMDRAW);
-          if Draw^.nmcd.dwDrawStage = CDDS_ITEMPREPAINT then
-          begin
-            if ListView_GetItemState(V.FGrid, Draw^.nmcd.dwItemSpec, LVIS_SELECTED) <> 0 then
-              Draw^.nmcd.uItemState := Draw^.nmcd.uItemState and not CDIS_SELECTED;
-            Exit(CDRF_NOTIFYSUBITEMDRAW);
-          end;
-          if Draw^.nmcd.dwDrawStage = (CDDS_ITEMPREPAINT or CDDS_SUBITEM) then
-          begin
-            if ListView_GetItemState(V.FGrid, Draw^.nmcd.dwItemSpec,
-              LVIS_SELECTED) <> 0 then
-            begin
-              Draw^.clrText := V.FSelectionTextColor;
-              if (Integer(Draw^.nmcd.dwItemSpec) = V.FCurrentRow) and
-                (Draw^.iSubItem = V.FCurrentColumn) then
-                Draw^.clrTextBk := V.FCurrentCellColor
-              else
-                Draw^.clrTextBk := V.FSelectionBackColor;
-            end
-            else
-            begin
-              Draw^.clrText := V.FTextColor;
-              if (Draw^.nmcd.dwItemSpec and 1) = 0 then
-                Draw^.clrTextBk := V.FBackColor
-              else
-                Draw^.clrTextBk := V.FBackColor2;
-            end;
-            Exit(CDRF_DODEFAULT);
-          end;
-        end;
+          Exit(V.CustomDraw(PNMLVCUSTOMDRAW(LParam)));
         Exit(0);
       end;
     WM_MOUSEWHEEL:
-      if Assigned(V) and ((GetKeyState(VK_CONTROL) and $8000) <> 0) then
+      if Assigned(V) and (((GetKeyState(VK_CONTROL) and $8000) <> 0) or
+        ((LoWord(WParam) and MK_CONTROL) <> 0)) then
       begin
         V.SetFontSize(V.FFontSize + ChooseInt(SmallInt(HiWord(WParam)) > 0, 1, -1));
         Exit(0);
@@ -435,16 +558,16 @@ begin
         Menu := CreatePopupMenu;
         try
           AppendMenuW(Menu, MF_STRING, IDM_COPY, 'Copy');
-          AppendMenuW(Menu, MF_STRING, IDM_COPY_ROWS, 'Copy row(s)');
-          AppendMenuW(Menu, MF_STRING, IDM_COPY_COLUMN, 'Copy column');
+          AppendMenuW(Menu, MF_STRING, IDM_COPY_ROWS, 'Copy row(s)  (Shift+C)');
+          AppendMenuW(Menu, MF_STRING, IDM_COPY_COLUMN, 'Copy column  (Ctrl+C)');
           AppendMenuW(Menu, MF_STRING, IDM_COPY_AS_JSON, 'Copy as JSON');
           AppendMenuW(Menu, MF_STRING, IDM_COPY_JSONPATH, 'Copy JSONPath');
           AppendMenuW(Menu, MF_SEPARATOR, 0, nil);
           AppendMenuW(Menu, MF_STRING, IDM_HIDE_COLUMN, 'Hide column');
-          AppendMenuW(Menu, MF_STRING, IDM_SHOW_COLUMNS, 'Show all columns');
+          AppendMenuW(Menu, MF_STRING, IDM_SHOW_COLUMNS, 'Show all columns  (Ctrl+Space)');
           AppendMenuW(Menu, MF_SEPARATOR, 0, nil);
           AppendMenuW(Menu, MF_STRING or ChooseInt(V.FFilterVisible, MF_CHECKED, 0), IDM_FILTERS, 'Filters');
-          AppendMenuW(Menu, MF_STRING or ChooseInt(V.FEditMode, MF_CHECKED, 0), IDM_EDIT_MODE, 'Edit mode');
+          AppendMenuW(Menu, MF_STRING or ChooseInt(V.FEditMode, MF_CHECKED, 0), IDM_EDIT_MODE, 'Edit mode  (Ctrl+R)');
           AppendMenuW(Menu, MF_STRING or ChooseInt(V.FDark, MF_CHECKED, 0), IDM_DARK_THEME, 'Dark theme');
           TrackPopupMenu(Menu, TPM_RIGHTBUTTON, P.X, P.Y, 0, Wnd, nil);
         finally
@@ -521,16 +644,21 @@ begin
   FPaths := TStringList.Create;
   FSplitter := ReadSettingInt('splitter-position', 200);
   if FSplitter < 110 then FSplitter := 110;
+  FSplitterDragOffset := 0;
   FSortColumn := -1;
   FCurrentRow := 0;
   FCurrentColumn := 0;
   FFilterBrush := 0;
+  FFilterOldProc := nil;
   FCellEditor := 0;
   FEditMode := False;
   FDirty := False;
   FClosingEditor := False;
+  FHighlighting := False;
+  FTextNeedsUpdate := True;
   FFileName := FileName;
   FFilterVisible := ReadSettingInt('filter-row', 1) <> 0;
+  FDecimalAlign := ReadSettingInt('decimal-align', 1) <> 0;
   FDark := ReadSettingInt('dark-theme', 0) <> 0;
   if not LoadJsonFile(FileName, ReadSettingInt('max-file-size', 1000000),
     ReadSettingInt('parse-mode', 0), FRoot, FEncoding, Malformed) then
@@ -575,19 +703,25 @@ begin
     HInstance, nil);
   FTextOldProc := WNDPROC(SetWindowLongPtrW(FText, GWLP_WNDPROC, PtrInt(@TextWndProc)));
   FStatus := CreateStatusWindowW(WS_CHILD or WS_VISIBLE, nil, FWnd, IDC_STATUS);
-  StatusParts[0] := 35;
-  StatusParts[1] := 95;
-  StatusParts[2] := 140;
-  StatusParts[3] := 200;
-  StatusParts[4] := 400;
-  StatusParts[5] := 500;
-  StatusParts[6] := -1;
-  SendMessageW(FStatus, SB_SETPARTS, 7, LPARAM(@StatusParts[0]));
+  StatusParts[0] := 95;
+  StatusParts[1] := 140;
+  StatusParts[2] := 200;
+  StatusParts[3] := 400;
+  StatusParts[4] := 500;
+  StatusParts[5] := -1;
+  SendMessageW(FStatus, SB_SETPARTS, 6, LPARAM(@StatusParts[0]));
   FFontSize := ReadSettingInt('font-size', 16);
   FFont := CreateFontW(FFontSize, 0, 0, 0, ConfiguredFontWeight,
     0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
     DEFAULT_QUALITY, DEFAULT_PITCH, PWideChar(ReadSetting('font', 'Arial')));
+  FHeaderFont := CreateFontW(FFontSize, 0, 0, 0, FW_BOLD,
+    0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+    DEFAULT_QUALITY, DEFAULT_PITCH, PWideChar(ReadSetting('font', 'Arial')));
+  FTabFont := CreateFontW(FFontSize, 0, 0, 0, FW_NORMAL,
+    0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+    DEFAULT_QUALITY, DEFAULT_PITCH, PWideChar(ReadSetting('font', 'Arial')));
   SendMessageW(FTree, WM_SETFONT, FFont, 1);
+  SendMessageW(FTab, WM_SETFONT, FTabFont, 1);
   SendMessageW(FGrid, WM_SETFONT, FFont, 1);
   SendMessageW(FText, WM_SETFONT, FFont, 1);
   TabCtrl_SetCurSel(FTab, ReadSettingInt('tab-no', 0));
@@ -611,6 +745,8 @@ begin
   for I := 0 to High(FFilterEdits) do
     if IsWindow(FFilterEdits[I]) then DestroyWindow(FFilterEdits[I]);
   SetWindowLongPtrW(FWnd, GWLP_USERDATA, 0);
+  if FTabFont <> 0 then DeleteObject(FTabFont);
+  if FHeaderFont <> 0 then DeleteObject(FHeaderFont);
   if FFont <> 0 then DeleteObject(FFont);
   if FFilterBrush <> 0 then DeleteObject(FFilterBrush);
   FreeAndNil(FRoot);
@@ -653,15 +789,35 @@ end;
 
 procedure TJsonViewer.BuildTree;
 var
-  RootItem: HTREEITEM;
+  RootItem, ChildItem: HTREEITEM;
   Caption: UnicodeString;
 begin
   if FMalformed then Caption := '<<malformed>>' else Caption := '<<root>>';
   AddTreeNode(nil, FRoot, Caption, '$');
   RootItem := HTREEITEM(FNodeMap[0]);
   SendMessageW(FTree, TVM_EXPAND, TVE_EXPAND, LPARAM(RootItem));
-  SendMessageW(FTree, TVM_SELECTITEM, TVGN_CARET, LPARAM(RootItem));
+  ChildItem := HTREEITEM(SendMessageW(FTree, TVM_GETNEXTITEM,
+    TVGN_CHILD, LPARAM(RootItem)));
+  while ChildItem <> nil do
+  begin
+    SendMessageW(FTree, TVM_EXPAND, TVE_EXPAND, LPARAM(ChildItem));
+    ChildItem := HTREEITEM(SendMessageW(FTree, TVM_GETNEXTITEM,
+      TVGN_NEXT, LPARAM(ChildItem)));
+  end;
+  { Select the first child of root (e.g. "presets"); fall back to root itself
+    if the root has no children (scalar or empty object/array). }
+  ChildItem := HTREEITEM(SendMessageW(FTree, TVM_GETNEXTITEM,
+    TVGN_CHILD, LPARAM(RootItem)));
+  if ChildItem <> nil then
+    SendMessageW(FTree, TVM_SELECTITEM, TVGN_CARET, LPARAM(ChildItem))
+  else
+    SendMessageW(FTree, TVM_SELECTITEM, TVGN_CARET, LPARAM(RootItem));
+  { The synchronous UpdateSelection here runs before the lister window is
+    fully visible, so grid/text content may not be shown on first paint.
+    PostMessage defers a second call into the running message loop, at
+    which point the window is visible and highlighting can proceed. }
   UpdateSelection;
+  PostMessage(FWnd, WMU_TREE_CHANGED, 0, 0);
 end;
 
 function TJsonViewer.SelectedData: TJSONData;
@@ -793,6 +949,7 @@ begin
     AddColumn(FGrid, 0, 'Value');
     FAllRows[0, 0] := JsonDisplayValue(Data);
   end;
+  UpdateDecimalAnchors;
   CreateFilterEdits;
   ApplyFilters;
   SendMessageW(FGrid, WM_SETREDRAW, 1, 0);
@@ -802,11 +959,22 @@ end;
 procedure TJsonViewer.UpdateText(Data: TJSONData);
 var
   S: UnicodeString;
+  CF: CHARFORMAT2W;
 begin
+  if not Assigned(Data) then Exit;
   S := JsonPretty(Data);
+  FillChar(CF, SizeOf(CF), 0);
+  CF.cbSize := SizeOf(CF);
+  CF.dwMask := CFM_COLOR or CFM_BOLD;
+  CF.crTextColor := FJsonTextColor;
+  SendMessageW(FText, EM_SETCHARFORMAT, SCF_DEFAULT, LPARAM(@CF));
   SetWindowTextW(FText, PWideChar(S));
-  if Length(S) < ReadSettingInt('max-highlight-length', 64000) then
-    HighlightText(S);
+  FTextNeedsUpdate := False;
+  { During the initial load the lister window is not visible yet, so the
+    highlight call below may bail out; the pending flag makes the first
+    WM_PAINT catch up on it. }
+  FHighlightPending := True;
+  HighlightVisibleText;
 end;
 
 procedure TJsonViewer.UpdateStatus(Data: TJSONData; Rows: Integer);
@@ -815,10 +983,8 @@ var
   Item: HTREEITEM;
   ChildNo: Integer;
 begin
-  S := ' 1.0.7';
-  SendMessageW(FStatus, SB_SETTEXTW, 0, LPARAM(PWideChar(S)));
   S := ' ' + FEncoding;
-  SendMessageW(FStatus, SB_SETTEXTW, 1, LPARAM(PWideChar(S)));
+  SendMessageW(FStatus, SB_SETTEXTW, 0, LPARAM(PWideChar(S)));
   Item := HTREEITEM(SendMessageW(FTree, TVM_GETNEXTITEM, TVGN_CARET, 0));
   ChildNo := 1;
   while Item <> nil do
@@ -827,16 +993,16 @@ begin
     if Item <> nil then Inc(ChildNo);
   end;
   S := Format(' %d', [ChildNo]);
-  SendMessageW(FStatus, SB_SETTEXTW, 2, LPARAM(PWideChar(S)));
+  SendMessageW(FStatus, SB_SETTEXTW, 1, LPARAM(PWideChar(S)));
   S := ' ' + JsonTypeName(Data);
-  SendMessageW(FStatus, SB_SETTEXTW, 3, LPARAM(PWideChar(S)));
+  SendMessageW(FStatus, SB_SETTEXTW, 2, LPARAM(PWideChar(S)));
   S := Format(' Rows: %d/%d', [Rows, Length(FAllRows)]);
-  SendMessageW(FStatus, SB_SETTEXTW, 4, LPARAM(PWideChar(S)));
+  SendMessageW(FStatus, SB_SETTEXTW, 3, LPARAM(PWideChar(S)));
   if (FCurrentRow >= 0) and (FCurrentColumn >= 0) then
     S := Format(' %d:%d', [FCurrentRow + 1, FCurrentColumn + 1])
   else
     S := '';
-  SendMessageW(FStatus, SB_SETTEXTW, 5, LPARAM(PWideChar(S)));
+  SendMessageW(FStatus, SB_SETTEXTW, 4, LPARAM(PWideChar(S)));
   UpdateEditStatus;
 end;
 
@@ -859,7 +1025,8 @@ begin
     if not Assigned(FCurrent) then Exit;
     BuildGrid(FCurrent);
     if KeepFilters then RestoreFilters(Filters);
-    UpdateText(FCurrent);
+    FTextNeedsUpdate := True;
+    if TabCtrl_GetCurSel(FTab) = 1 then UpdateText(FCurrent);
     if FCurrent.JSONType in [jtArray, jtObject] then UpdateStatus(FCurrent, FCurrent.Count)
     else UpdateStatus(FCurrent, 1);
   finally
@@ -936,8 +1103,9 @@ begin
   ListView_SetTextBkColor(FGrid, FBackColor);
   ListView_SetTextColor(FGrid, FTextColor);
   SendMessageW(FText, EM_SETBKGNDCOLOR, 0, FBackColor);
-  if Assigned(FCurrent) then HighlightText(JsonPretty(FCurrent));
+  if Assigned(FCurrent) then HighlightVisibleText;
   LayoutFilters;
+  InvalidateRect(ListView_GetHeader(FGrid), nil, True);
   InvalidateRect(FTab, nil, True);
   InvalidateRect(FWnd, nil, True);
 end;
@@ -1233,6 +1401,11 @@ begin
     FFilterEdits[I] := CreateWindowExW(WS_EX_CLIENTEDGE, 'EDIT', nil,
       WS_CHILD or WS_VISIBLE or WS_TABSTOP or ES_AUTOHSCROLL or EditStyle,
       0, 0, 10, 22, FTab, IDC_FILTER_BASE + I, HInstance, nil);
+    if not Assigned(FFilterOldProc) then
+      FFilterOldProc := WNDPROC(SetWindowLongPtrW(FFilterEdits[I],
+        GWLP_WNDPROC, PtrInt(@FilterWndProc)))
+    else
+      SetWindowLongPtrW(FFilterEdits[I], GWLP_WNDPROC, PtrInt(@FilterWndProc));
     SendMessageW(FFilterEdits[I], WM_SETFONT, FFont, 1);
   end;
   LayoutFilters;
@@ -1292,6 +1465,182 @@ begin
   InvalidateRect(FGrid, nil, True);
 end;
 
+function MeasureTextWidth(DC: HDC; const S: UnicodeString): Integer;
+var
+  Size: TSize;
+begin
+  Result := 0;
+  if (S = '') or not GetTextExtentPoint32W(DC, PWideChar(S), Length(S), Size) then
+    Exit;
+  Result := Size.cx;
+end;
+
+procedure TJsonViewer.UpdateDecimalAnchors;
+var
+  DC: HDC;
+  OldFont: HGDIOBJ;
+  Column, Row, Width, ColumnCount: Integer;
+  S, IntegerPart, FractionPart: UnicodeString;
+  Separator: WideChar;
+begin
+  ColumnCount := Header_GetItemCount(ListView_GetHeader(FGrid));
+  SetLength(FDecimalAnchors, ColumnCount);
+  SetLength(FColumnHasDecimals, ColumnCount);
+  if ColumnCount > 0 then
+  begin
+    FillChar(FDecimalAnchors[0], ColumnCount * SizeOf(FDecimalAnchors[0]), 0);
+    FillChar(FColumnHasDecimals[0],
+      ColumnCount * SizeOf(FColumnHasDecimals[0]), 0);
+  end;
+  if not FDecimalAlign or not IsWindow(FGrid) then Exit;
+  DC := GetDC(FGrid);
+  if DC = 0 then Exit;
+  OldFont := 0;
+  if FFont <> 0 then OldFont := SelectObject(DC, FFont);
+  try
+    for Column := 0 to ColumnCount - 1 do
+      for Row := 0 to High(FAllRows) do
+        if SplitDecimalText(FAllRows[Row, Column], IntegerPart,
+          FractionPart, Separator) then
+        begin
+          FColumnHasDecimals[Column] := True;
+          Break;
+        end;
+    for Column := 0 to ColumnCount - 1 do
+    begin
+      if not FColumnHasDecimals[Column] then Continue;
+      for Row := 0 to High(FAllRows) do
+      begin
+        S := FAllRows[Row, Column];
+        if not DecimalAnchorPart(S, IntegerPart) then Continue;
+        Width := MeasureTextWidth(DC, IntegerPart);
+        if Width > FDecimalAnchors[Column] then
+          FDecimalAnchors[Column] := Width;
+      end;
+    end;
+  finally
+    if OldFont <> 0 then SelectObject(DC, OldFont);
+    ReleaseDC(FGrid, DC);
+  end;
+end;
+
+function TJsonViewer.CustomDraw(Draw: PNMLVCustomDraw): LRESULT;
+var
+  Row, Column, Anchor, SavedDC: Integer;
+  Selected, CurrentCell: Boolean;
+  R, TextRect: TRect;
+  Brush: HBRUSH;
+  S, IntegerPart, FractionPart, DecimalText: UnicodeString;
+  Separator: WideChar;
+  OldTextColor: COLORREF;
+  OldBkMode: Integer;
+  OldFont: HGDIOBJ;
+  Pen, OldPen: HPEN;
+begin
+  Result := CDRF_DODEFAULT;
+  if not Assigned(Draw) then Exit;
+  if Draw^.nmcd.dwDrawStage = CDDS_PREPAINT then
+    Exit(CDRF_NOTIFYITEMDRAW);
+  if Draw^.nmcd.dwDrawStage = CDDS_ITEMPREPAINT then
+  begin
+    Row := Integer(Draw^.nmcd.dwItemSpec);
+    if ListView_GetItemState(FGrid, Row, LVIS_SELECTED) <> 0 then
+      Draw^.nmcd.uItemState := Draw^.nmcd.uItemState and not CDIS_SELECTED;
+    Exit(CDRF_NOTIFYSUBITEMDRAW);
+  end;
+  if Draw^.nmcd.dwDrawStage <> (CDDS_ITEMPREPAINT or CDDS_SUBITEM) then Exit;
+
+  Row := Integer(Draw^.nmcd.dwItemSpec);
+  Column := Draw^.iSubItem;
+  Selected := ListView_GetItemState(FGrid, Row, LVIS_SELECTED) <> 0;
+  if Selected then
+  begin
+    CurrentCell := (Row = FCurrentRow) and (Column = FCurrentColumn);
+    Draw^.clrText := FSelectionTextColor;
+    if CurrentCell then Draw^.clrTextBk := FCurrentCellColor
+    else Draw^.clrTextBk := FSelectionBackColor;
+  end
+  else
+  begin
+    Draw^.clrText := FTextColor;
+    if (Row and 1) = 0 then Draw^.clrTextBk := FBackColor
+    else Draw^.clrTextBk := FBackColor2;
+  end;
+
+  if not FDecimalAlign or (Column < 0) or
+    (Column >= Length(FDecimalAnchors)) or (Row < 0) or
+    (Row >= Length(FVisibleRows)) or
+    (Column >= Length(FAllRows[FVisibleRows[Row]])) then Exit;
+  S := FAllRows[FVisibleRows[Row], Column];
+  if not SplitDecimalText(S, IntegerPart, FractionPart, Separator) and
+    not IsIntegerText(S) then Exit;
+
+  FillChar(R, SizeOf(R), 0);
+  R.Top := Column;
+  R.Left := LVIR_BOUNDS;
+  if SendMessageW(FGrid, LVM_GETSUBITEMRECT, Row, LPARAM(@R)) = 0 then
+    R := Draw^.nmcd.rc;
+  if Column = 0 then R.Right := R.Left + ListView_GetColumnWidth(FGrid, 0);
+  Brush := CreateSolidBrush(Draw^.clrTextBk);
+  FillRect(Draw^.nmcd.hdc, R, Brush);
+  DeleteObject(Brush);
+  SavedDC := SaveDC(Draw^.nmcd.hdc);
+  IntersectClipRect(Draw^.nmcd.hdc, R.Left + 1, R.Top + 1,
+    R.Right - 1, R.Bottom - 1);
+  OldFont := 0;
+  if FFont <> 0 then OldFont := SelectObject(Draw^.nmcd.hdc, FFont);
+  OldTextColor := SetTextColor(Draw^.nmcd.hdc, Draw^.clrText);
+  OldBkMode := SetBkMode(Draw^.nmcd.hdc, TRANSPARENT);
+  TextRect := R;
+  if Separator = #0 then
+  begin
+    if (Column < Length(FColumnHasDecimals)) and
+      FColumnHasDecimals[Column] then
+    begin
+      Anchor := R.Left + 6 + FDecimalAnchors[Column];
+      TextRect.Left := R.Left + 6;
+      TextRect.Right := Anchor;
+      DrawTextW(Draw^.nmcd.hdc, PWideChar(Trim(S)), -1, TextRect,
+        DT_RIGHT or DT_VCENTER or DT_SINGLELINE or DT_END_ELLIPSIS);
+    end
+    else
+    begin
+      InflateRect(TextRect, -6, 0);
+      DrawTextW(Draw^.nmcd.hdc, PWideChar(S), -1, TextRect,
+        DT_RIGHT or DT_VCENTER or DT_SINGLELINE or DT_END_ELLIPSIS);
+    end;
+  end
+  else
+  begin
+    Anchor := R.Left + 6 + FDecimalAnchors[Column];
+    TextRect.Left := R.Left + 6;
+    TextRect.Right := Anchor;
+    DrawTextW(Draw^.nmcd.hdc, PWideChar(IntegerPart), -1, TextRect,
+      DT_RIGHT or DT_VCENTER or DT_SINGLELINE);
+    DecimalText := Separator + FractionPart;
+    TextRect.Left := Anchor;
+    TextRect.Right := R.Right - 6;
+    DrawTextW(Draw^.nmcd.hdc, PWideChar(DecimalText), -1, TextRect,
+      DT_LEFT or DT_VCENTER or DT_SINGLELINE or DT_END_ELLIPSIS);
+  end;
+  SetBkMode(Draw^.nmcd.hdc, OldBkMode);
+  SetTextColor(Draw^.nmcd.hdc, OldTextColor);
+  if OldFont <> 0 then SelectObject(Draw^.nmcd.hdc, OldFont);
+  RestoreDC(Draw^.nmcd.hdc, SavedDC);
+  if (ListView_GetExtendedListViewStyle(FGrid) and LVS_EX_GRIDLINES) <> 0 then
+  begin
+    Pen := CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DFACE));
+    OldPen := SelectObject(Draw^.nmcd.hdc, Pen);
+    MoveToEx(Draw^.nmcd.hdc, R.Right - 1, R.Top, nil);
+    LineTo(Draw^.nmcd.hdc, R.Right - 1, R.Bottom);
+    MoveToEx(Draw^.nmcd.hdc, R.Left, R.Bottom - 1, nil);
+    LineTo(Draw^.nmcd.hdc, R.Right, R.Bottom - 1);
+    SelectObject(Draw^.nmcd.hdc, OldPen);
+    DeleteObject(Pen);
+  end;
+  Result := CDRF_SKIPDEFAULT;
+end;
+
 procedure TJsonViewer.AutoSizeVisibleColumns;
 const
   HEADER_PADDING = 24;
@@ -1321,10 +1670,12 @@ begin
       GetHeaderText(ListView_GetHeader(FGrid), Col, @HeaderBuf[0], Length(HeaderBuf));
       S := HeaderBuf;
       FillChar(Size, SizeOf(Size), 0);
+      SelectObject(DC, FHeaderFont);
       GetTextExtentPoint32W(DC, PWideChar(S), Length(S), Size);
+      SelectObject(DC, FFont);
       HeaderWidth := Size.cx + HEADER_PADDING;
       DesiredWidth := HeaderWidth;
-      MaxWidth := HeaderWidth * 2;
+      MaxWidth := HeaderWidth * 3;
       if (ColCount > 1) and (ConfiguredMaxWidth > 0) and
         (ConfiguredMaxWidth < MaxWidth) then
         MaxWidth := ConfiguredMaxWidth;
@@ -1467,17 +1818,28 @@ var
 begin
   if (NewSize < 10) or (NewSize > 48) or (NewSize = FFontSize) then Exit;
   FFontSize := NewSize;
+  if FTabFont <> 0 then DeleteObject(FTabFont);
+  if FHeaderFont <> 0 then DeleteObject(FHeaderFont);
   if FFont <> 0 then DeleteObject(FFont);
   FFont := CreateFontW(FFontSize, 0, 0, 0, ConfiguredFontWeight, 0, 0, 0,
     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
     DEFAULT_QUALITY, DEFAULT_PITCH, PWideChar(ReadSetting('font', 'Arial')));
+  FHeaderFont := CreateFontW(FFontSize, 0, 0, 0, FW_BOLD, 0, 0, 0,
+    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+    DEFAULT_QUALITY, DEFAULT_PITCH, PWideChar(ReadSetting('font', 'Arial')));
+  FTabFont := CreateFontW(FFontSize, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+    DEFAULT_QUALITY, DEFAULT_PITCH, PWideChar(ReadSetting('font', 'Arial')));
   SendMessageW(FTree, WM_SETFONT, FFont, 1);
+  SendMessageW(FTab, WM_SETFONT, FTabFont, 1);
   SendMessageW(FGrid, WM_SETFONT, FFont, 1);
   SendMessageW(FText, WM_SETFONT, FFont, 1);
   for I := 0 to High(FFilterEdits) do
     SendMessageW(FFilterEdits[I], WM_SETFONT, FFont, 1);
+  UpdateDecimalAnchors;
   AutoSizeVisibleColumns;
   Layout;
+  InvalidateRect(ListView_GetHeader(FGrid), nil, True);
 end;
 
 procedure SetTextFormat(Wnd: HWND; StartPos, TextLength: Integer;
@@ -1512,57 +1874,121 @@ begin
   SetLength(Result, N);
 end;
 
-procedure TJsonViewer.HighlightText(const Text: UnicodeString);
-var
-  I, J, K: Integer;
-  IsKey, UseBold: Boolean;
-  ScanText: UnicodeString;
+procedure TJsonViewer.ScheduleHighlight;
 begin
-  { RichEdit stores a displayed CRLF as one selection-position character. }
-  ScanText := RichEditPositionText(Text);
-  UseBold := ReadSettingInt('font-use-bold', 0) <> 0;
-  SetTextFormat(FText, 0, Length(ScanText), FJsonTextColor, False);
-  I := 1;
-  while I <= Length(ScanText) do
-  begin
-    if ScanText[I] = '"' then
+  { Force the next timer tick to recolor, then keep checking until the
+    visible region stops moving (rich edit wheel scrolling is animated). }
+  FHighlightFirstLine := -1;
+  SetTimer(FWnd, IDT_HIGHLIGHT, 80, nil);
+end;
+
+procedure TJsonViewer.HighlightVisibleText;
+var
+  I, J, K, FirstLine, LastLine, StartPos, EndPos, NextPos, Copied: Integer;
+  SelStart, SelEnd: Integer;
+  IsKey, UseBold: Boolean;
+  Text, ScanText: UnicodeString;
+  R: TRect;
+  P, ScrollPos: TPoint;
+  SelInView: Boolean;
+  TextRange: TTextRangeW;
+begin
+  if FHighlighting or not IsWindowVisible(FText) then Exit;
+  FHighlighting := True;
+  SelStart := 0;
+  SelEnd := 0;
+  SelInView := False;
+  SendMessageW(FText, WM_SETREDRAW, 0, 0);
+  ScrollPos.X := 0;
+  ScrollPos.Y := 0;
+  SendMessageW(FText, EM_GETSCROLLPOS, 0, LPARAM(@ScrollPos));
+  try
+    GetClientRect(FText, R);
+    FHighlightPending := False;
+    FirstLine := SendMessageW(FText, EM_GETFIRSTVISIBLELINE, 0, 0);
+    FHighlightFirstLine := FirstLine;
+    StartPos := SendMessageW(FText, EM_LINEINDEX, FirstLine, 0);
+    LastLine := FirstLine;
+    while LastLine - FirstLine < 1000 do
     begin
-      J := I + 1;
-      while J <= Length(ScanText) do
+      NextPos := SendMessageW(FText, EM_LINEINDEX, LastLine + 1, 0);
+      if NextPos < 0 then Break;
+      P.X := 0;
+      P.Y := 0;
+      SendMessageW(FText, EM_POSFROMCHAR, WPARAM(@P), NextPos);
+      if P.Y >= R.Bottom then Break;
+      Inc(LastLine);
+    end;
+    EndPos := SendMessageW(FText, EM_LINEINDEX, LastLine, 0);
+    if EndPos < 0 then Exit;
+    Inc(EndPos, SendMessageW(FText, EM_LINELENGTH, EndPos, 0));
+    if EndPos <= StartPos then Exit;
+
+    SetLength(Text, EndPos - StartPos + 1);
+    TextRange.chrg.cpMin := StartPos;
+    TextRange.chrg.cpMax := EndPos;
+    TextRange.lpstrText := PWideChar(Text);
+    Copied := SendMessageW(FText, EM_GETTEXTRANGE, 0, LPARAM(@TextRange));
+    SetLength(Text, Copied);
+    { RichEdit stores a displayed CRLF as one selection-position character. }
+    ScanText := RichEditPositionText(Text);
+    UseBold := ReadSettingInt('font-use-bold', 0) <> 0;
+    SendMessageW(FText, EM_GETSEL, WPARAM(@SelStart), LPARAM(@SelEnd));
+    SelInView := (SelStart >= StartPos) and (SelStart <= EndPos);
+    SetTextFormat(FText, StartPos, Length(ScanText), FJsonTextColor, False);
+    I := 1;
+    while I <= Length(ScanText) do
+    begin
+      if ScanText[I] = '"' then
       begin
-        if (ScanText[J] = '"') and
-          ((J = 1) or (ScanText[J - 1] <> '\')) then Break;
-        Inc(J);
+        J := I + 1;
+        while J <= Length(ScanText) do
+        begin
+          if (ScanText[J] = '"') and
+            ((J = 1) or (ScanText[J - 1] <> '\')) then Break;
+          Inc(J);
+        end;
+        K := J + 1;
+        while (K <= Length(ScanText)) and (ScanText[K] <= ' ') do Inc(K);
+        IsKey := (K <= Length(ScanText)) and (ScanText[K] = ':');
+        SetTextFormat(FText, StartPos + I - 1, J - I + 1,
+          ChooseInt(IsKey, FJsonKeyColor, FJsonStringColor), IsKey and UseBold);
+        I := J + 1;
+        Continue;
       end;
-      K := J + 1;
-      while (K <= Length(ScanText)) and (ScanText[K] <= ' ') do Inc(K);
-      IsKey := (K <= Length(ScanText)) and (ScanText[K] = ':');
-      SetTextFormat(FText, I - 1, J - I + 1,
-        ChooseInt(IsKey, FJsonKeyColor, FJsonStringColor), IsKey and UseBold);
-      I := J + 1;
-      Continue;
+      if Copy(ScanText, I, 4) = 'true' then
+      begin
+        SetTextFormat(FText, StartPos + I - 1, 4, FJsonBooleanColor, False);
+        Inc(I, 4);
+        Continue;
+      end;
+      if Copy(ScanText, I, 5) = 'false' then
+      begin
+        SetTextFormat(FText, StartPos + I - 1, 5, FJsonBooleanColor, False);
+        Inc(I, 5);
+        Continue;
+      end;
+      if Copy(ScanText, I, 4) = 'null' then
+      begin
+        SetTextFormat(FText, StartPos + I - 1, 4, FJsonNullColor, UseBold);
+        Inc(I, 4);
+        Continue;
+      end;
+      Inc(I);
     end;
-    if Copy(ScanText, I, 4) = 'true' then
-    begin
-      SetTextFormat(FText, I - 1, 4, FJsonBooleanColor, False);
-      Inc(I, 4);
-      Continue;
-    end;
-    if Copy(ScanText, I, 5) = 'false' then
-    begin
-      SetTextFormat(FText, I - 1, 5, FJsonBooleanColor, False);
-      Inc(I, 5);
-      Continue;
-    end;
-    if Copy(ScanText, I, 4) = 'null' then
-    begin
-      SetTextFormat(FText, I - 1, 4, FJsonNullColor, UseBold);
-      Inc(I, 4);
-      Continue;
-    end;
-    Inc(I);
+  finally
+    SendMessageW(FText, EM_SETSCROLLPOS, 0, LPARAM(@ScrollPos));
+    { Restore selection only when it is within the visible area. An
+      off-screen selection would make the RichEdit scroll to it when
+      WM_SETREDRAW re-enables drawing, overriding the restored position. }
+    if SelInView then
+      SendMessageW(FText, EM_SETSEL, SelStart, SelEnd)
+    else
+      SendMessageW(FText, EM_SETSEL, StartPos, StartPos);
+    SendMessageW(FText, WM_SETREDRAW, 1, 0);
+    InvalidateRect(FText, nil, False);
+    FHighlighting := False;
   end;
-  SendMessageW(FText, EM_SETSEL, 0, 0);
 end;
 
 procedure TJsonViewer.OpenCurrentUrl;
@@ -1826,7 +2252,9 @@ begin
   end;
   if (Row >= 0) and (Row < Length(FVisibleRows)) then
     FAllRows[FVisibleRows[Row], Column] := JsonDisplayValue(Data);
-  UpdateText(FCurrent);
+  UpdateDecimalAnchors;
+  FTextNeedsUpdate := True;
+  if TabCtrl_GetCurSel(FTab) = 1 then UpdateText(FCurrent);
   ApplyFilters;
   InvalidateRect(FTree, nil, True);
   FDirty := True;
@@ -1843,7 +2271,7 @@ begin
   else if FEditMode then S := ' EDIT MODE'
   else if FDirty then S := ' MODIFIED *'
   else S := '';
-  SendMessageW(FStatus, SB_SETTEXTW, 6, LPARAM(PWideChar(S)));
+  SendMessageW(FStatus, SB_SETTEXTW, 5, LPARAM(PWideChar(S)));
 end;
 
 function TJsonViewer.SaveChanges: Boolean;
@@ -1866,6 +2294,19 @@ begin
     UpdateEditStatus(' SAVE FAILED');
     MessageBeep(MB_ICONERROR);
   end;
+end;
+
+procedure TJsonViewer.ConfirmSaveBeforeClose;
+var
+  FileLabel, MessageText: UnicodeString;
+begin
+  CloseCellEdit(True);
+  if not FDirty then Exit;
+  FileLabel := ExtractFileName(FFileName);
+  MessageText := 'Save changes to "' + FileLabel + '" before closing?';
+  if MessageBoxW(FWnd, PWideChar(MessageText), 'jsontab',
+    MB_YESNO or MB_ICONWARNING or MB_DEFBUTTON1) = IDYES then
+    SaveChanges;
 end;
 
 function TJsonViewer.ForwardHostHotKey(Key: WPARAM): Boolean;
@@ -1907,7 +2348,7 @@ begin
     S := Format(' %d:%d', [Row + 1, Column + 1])
   else
     S := '';
-  SendMessageW(FStatus, SB_SETTEXTW, 5, LPARAM(PWideChar(S)));
+  SendMessageW(FStatus, SB_SETTEXTW, 4, LPARAM(PWideChar(S)));
 end;
 
 function TJsonViewer.HandleHotKey(Key: WPARAM): Boolean;
@@ -2208,7 +2649,11 @@ var
   V: TJsonViewer;
 begin
   V := ViewerFromWnd(Wnd);
-  V.Free;
+  if Assigned(V) then
+  begin
+    V.ConfirmSaveBeforeClose;
+    V.Free;
+  end;
 end;
 
 function SearchJsonViewer(Wnd: HWND; const SearchText: UnicodeString;
