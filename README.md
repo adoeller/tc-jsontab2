@@ -3,6 +3,8 @@
 JSON Tab WLX is a native Windows Lister plugin for
 [Total Commander](https://www.ghisler.com/) that displays JSON documents as a
 combined tree, table, and formatted text view.
+![grid](json_grid.png)
+![text](json_text.png)
 
 Both regular JSON documents (`.json`) and JSON Lines documents (`.jsonl`) are
 supported. JSONL records are shown as the elements of one root array and are
