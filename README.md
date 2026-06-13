@@ -4,6 +4,10 @@ JSON Tab WLX is a native Windows Lister plugin for
 [Total Commander](https://www.ghisler.com/) that displays JSON documents as a
 combined tree, table, and formatted text view.
 
+Both regular JSON documents (`.json`) and JSON Lines documents (`.jsonl`) are
+supported. JSONL records are shown as the elements of one root array and are
+saved back as one compact JSON value per line.
+
 This project is a Lazarus/Free Pascal migration of the original
 [jsontab-wlx](https://github.com/little-brother/jsontab-wlx) plugin by
 little-brother. The original program established the user interface, behavior,
@@ -41,6 +45,7 @@ This Lazarus/FPC version adds or substantially changes:
   - Embedded numbers are sorted naturally, so `20` appears before `100`
   - Text is sorted using Windows locale-aware comparison
 - Virtual owner-data grid with a result index for large arrays
+- Optional pixel-accurate decimal alignment per column, enabled by default
 - Alternating row colors and distinct current-cell highlighting
 - Automatically sized columns:
   - Measures the header and the first 1,000 visible rows
@@ -116,7 +121,8 @@ Install the file as a Total Commander Lister plugin through:
 
 `Configuration` > `Options` > `Plugins` > `Lister plugins`
 
-The default detection string handles files with the `.json` extension.
+The default detection string handles files with the `.json` and `.jsonl`
+extensions.
 
 ## Building
 
@@ -160,10 +166,26 @@ Original layout and interaction settings are supported as well:
 
 - `copy-column`: copy the current column with plain `C` when multiple rows are
   selected
+- `decimal-align`: align decimal values with `,` or `.` at their decimal
+  separator and right-align signed or unsigned integers (`0`/`1`, default `1`).
+  In columns containing both integers and decimals, integers end directly at
+  the shared decimal anchor.
 - `disable-grid-lines`: hide grid lines
 - `filter-align`: align filter text left (`-1`), centered (`0`), or right (`1`)
 - `font-weight`: select a font weight from `0` through `9`
 - `max-column-width`: add a pixel limit to automatic multi-column sizing
+
+Decimal alignment measures the integer part using the active grid font, so it
+also works with proportional fonts. Non-numeric values and values containing
+multiple decimal separators retain their normal display.
+
+## Tests
+
+- `tests/decimal_align_test.lpr` verifies decimal and integer recognition.
+- `tests/jsonl_model_test.lpr` verifies JSONL loading and saving.
+- `tests/wlx_viewer_test.lpr` loads the compiled WLX and exercises decimal
+  owner-draw after filtering, sorting, font zoom, editing, and structural tree
+  changes.
 
 ## Original Project
 
