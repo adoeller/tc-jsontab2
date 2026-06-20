@@ -37,7 +37,8 @@ procedure ListGetDetectString(DetectString: PAnsiChar; MaxLen: Integer); stdcall
 var
   S: AnsiString;
 begin
-  S := UTF8Encode(ReadSetting('detect-string', 'MULTIMEDIA & ext="JSON"'));
+  S := UTF8Encode(ReadSetting('detect-string',
+    'MULTIMEDIA & (ext="JSON" | ext="JSONL")'));
   StrLCopy(DetectString, PAnsiChar(S), MaxLen - 1);
 end;
 
