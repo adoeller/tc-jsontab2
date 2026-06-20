@@ -28,6 +28,8 @@ This Lazarus/FPC version adds or substantially changes:
 - Result-index-based filtering and sorting without rearranging JSON data
 - Stable locale-aware natural sorting
 - Filter transfer between compatible tree nodes using `Ctrl+Shift`
+- Filter fields smoothly follow horizontal grid scrolling and column-width
+  changes
 - Automatic bounded column sizing based on visible results
 - Explicit current-cell display and alternating row colors
 - Extended context menu and keyboard controls
@@ -65,7 +67,7 @@ This Lazarus/FPC version adds or substantially changes:
 
 ## Editing
 
-Press `Ctrl+R` or use **Edit mode** in the grid context menu to toggle editing.
+Press `Ctrl+E` or use **Edit mode** in the grid context menu to toggle editing.
 While edit mode is active, double-clicking a scalar cell opens an inline
 editor.
 
@@ -84,7 +86,7 @@ instead.
 
 | Action | Shortcut |
 | --- | --- |
-| Toggle edit mode | `Ctrl+R` |
+| Toggle edit mode | `Ctrl+E` |
 | Save changes | `Ctrl+S` |
 | Sort current column | `Ctrl+0` |
 | Sort visible column 1 through 9 | `Ctrl+1` through `Ctrl+9` |
@@ -102,14 +104,14 @@ supported.
 Right-click the grid to access:
 
 - Copy
-- Copy row(s)
-- Copy column
+- Copy row(s) (`Shift+C`)
+- Copy column (`Ctrl+C`)
 - Copy as JSON
 - Copy JSONPath
 - Hide column
-- Show all columns
+- Show all columns (`Ctrl+Space`)
 - Filters
-- Edit mode
+- Edit mode (`Ctrl+E`)
 - Dark theme
 
 ## Installation
@@ -196,3 +198,4 @@ Original jsontab-WLX project:
 
 Please refer to the original repository for its history, documentation, issue
 tracker, and releases.
+
