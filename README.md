@@ -3,6 +3,7 @@
 JSON Tab WLX is a native Windows Lister plugin for
 [Total Commander](https://www.ghisler.com/) that displays JSON documents as a
 combined tree, table, and formatted text view.
+
 ![grid](json_grid.png)![text](json_text.png)
 
 Both regular JSON documents (`.json`) and JSON Lines documents (`.jsonl`) are
@@ -38,6 +39,16 @@ This Lazarus/FPC version adds or substantially changes:
 
 - Tree navigation for objects, arrays, and scalar values
 - Grid view for objects and arrays
+- Optional `FlatViewLevel`: flatten object levels relative to the selected
+  tree node into columns (`message`, `meta.message`, and so on). For arrays,
+  direct scalar columns are retained while nested objects are expanded
+  (`modulation_params.audio_freq`). Array flattening requires a uniform schema
+  with the same leaf paths in every row. The normal view is retained if rows
+  differ, an intermediate level contains arrays, or objects remain below the
+  requested depth.
+- The current flat-view level is shown in the status bar. Left-click `Flat`
+  to switch between levels 0, 1, and 2. A changed level is written back to the
+  INI file when the viewer closes.
 - Formatted JSON text view with syntax highlighting
 - Synchronization between selected grid cells and the text view
 - Navigation from a double-clicked grid row to its tree element
@@ -56,6 +67,7 @@ This Lazarus/FPC version adds or substantially changes:
   - Limits the width to three times the header width
 - Hide individual columns or restore all columns
 - Copy cell, selected rows, column, JSONPath, or inferred JSON
+- Configurable `column-delimiter` for copied rows; missing or empty values use TAB
 - Search in grid and text views
 - Light and dark themes
 - Configurable colors for the grid, filters, selections, splitter, and JSON
@@ -176,7 +188,7 @@ Original layout and interaction settings are supported as well:
 - `disable-grid-lines`: hide grid lines
 - `filter-align`: align filter text left (`-1`), centered (`0`), or right (`1`)
 - `font-weight`: select a font weight from `0` through `9`
-- `max-column-width`: add a pixel limit to automatic multi-column sizing
+- `max-column-width`: limit automatic multi-column sizing; in two-column grids only the first column is capped, while the second uses its full measured header/content width
 
 Decimal alignment measures the integer part using the active grid font, so it
 also works with proportional fonts. Non-numeric values and values containing
@@ -197,4 +209,3 @@ Original jsontab-WLX project:
 
 Please refer to the original repository for its history, documentation, issue
 tracker, and releases.
-
