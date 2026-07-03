@@ -1,10 +1,10 @@
 # JSON Tab WLX for Lazarus/FPC
 
+![grid](json_grid.png)![text](json_text.png)
+
 JSON Tab WLX is a native Windows Lister plugin for
 [Total Commander](https://www.ghisler.com/) that displays JSON documents as a
 combined tree, table, and formatted text view.
-
-![grid](json_grid.png)![text](json_text.png)
 
 Both regular JSON documents (`.json`) and JSON Lines documents (`.jsonl`) are
 supported. JSONL records are shown as the elements of one root array and are
@@ -15,66 +15,48 @@ This project is a Lazarus/Free Pascal migration of the original
 little-brother. The original program established the user interface, behavior,
 and core feature set on which this port is based.
 
-The migration keeps the familiar workflow while adding editing, improved
-sorting, and better performance for large arrays.
+The migration keeps the familiar workflow and turns it into a faster, more
+interactive JSON workbench for Total Commander.
 
-## Differences And Extensions Compared To The Original
+## Feature Highlights
 
-This Lazarus/FPC version adds or substantially changes:
+JSON Tab WLX is built for the moment when a JSON file is too structured for a
+plain text viewer, but too quick-and-dirty for a full editor. Open it in
+Lister, jump through the tree, flatten useful structures into columns, filter
+the result, edit a scalar value, copy exactly what you need, and move on.
 
-- Native Free Pascal implementation with a Lazarus project
-- Inline scalar editing and saving
-- Virtual owner-data grid for improved large-array handling
-- Result-index-based filtering and sorting without rearranging JSON data
-- Stable locale-aware natural sorting
-- Filter transfer between compatible tree nodes using `Ctrl+Shift`
-- Filter fields smoothly follow horizontal grid scrolling and column-width
-  changes
-- Automatic bounded column sizing based on visible results
-- Explicit current-cell display and alternating row colors
-- Extended context menu and keyboard controls
-- Win32 and Win64 release build modes from one project
-
-## Features
-
-- Tree navigation for objects, arrays, and scalar values
-- Grid view for objects and arrays
-- Optional `FlatViewLevel`: flatten object levels relative to the selected
-  tree node into columns (`message`, `meta.message`, and so on). For arrays,
-  direct scalar columns are retained while nested objects are expanded
-  (`modulation_params.audio_freq`). Array flattening requires a uniform schema
-  with the same leaf paths in every row. The normal view is retained if rows
-  differ, an intermediate level contains arrays, or objects remain below the
-  requested depth.
-- The current flat-view level is shown in the status bar. Left-click `Flat`
-  to switch between levels 0, 1, and 2. A changed level is written back to the
-  INI file when the viewer closes.
-- Formatted JSON text view with syntax highlighting
-- Synchronization between selected grid cells and the text view
-- Navigation from a double-clicked grid row to its tree element
-- Per-column filters with substring, `=`, `!`, `<`, and `>` operators
-- Optional filter preservation when changing tree nodes with `Ctrl+Shift`
-- Stable natural sorting:
-  - JSON numbers are sorted numerically
-  - Embedded numbers are sorted naturally, so `20` appears before `100`
-  - Text is sorted using Windows locale-aware comparison
-- Virtual owner-data grid with a result index for large arrays
-- Optional pixel-accurate decimal alignment per column, enabled by default
-- Alternating row colors and distinct current-cell highlighting
-- Automatically sized columns:
-  - Measures the header and the first 1,000 visible rows
-  - Uses the header width as the minimum
-  - Limits the width to three times the header width
-- Hide individual columns or restore all columns
-- Copy cell, selected rows, column, JSONPath, or inferred JSON
-- Configurable `column-delimiter` for copied rows; missing or empty values use TAB
-- Search in grid and text views
-- Light and dark themes
-- Configurable colors for the grid, filters, selections, splitter, and JSON
-  syntax elements
-- UTF-8 and UTF-16 LE/BE detection
-- Native Win32 user interface without the LCL runtime
-- Win32 and Win64 WLX builds
+- **Tree, table, and text at once**: browse objects and arrays in the tree,
+  inspect rows in the grid, and switch to syntax-highlighted formatted JSON
+  when the raw structure matters.
+- **JSONL feels like normal JSON**: `.jsonl` files are shown as one root array,
+  while saving keeps the compact one-record-per-line format.
+- **Flat views for nested data**: `FlatViewLevel` can unfold uniform nested
+  objects and arrays into practical columns such as `message`,
+  `meta.message`, or `modulation_params.audio_freq`. The status bar shows the
+  active level, and `Flat: 1*` tells you when flattening is really in effect.
+- **Filters that stay usable**: every column can be filtered with substring
+  matching or operators like `=`, `!`, `<`, and `>`. The filter row follows
+  horizontal scrolling and column resizing smoothly, so it keeps feeling like
+  part of the grid.
+- **Sorting that understands data**: JSON numbers sort numerically, embedded
+  numbers sort naturally, and text sorting uses Windows locale-aware
+  comparison. A third click restores the original order.
+- **Readable numbers, even in proportional fonts**: decimal alignment is
+  enabled by default. Decimal separators line up per column, and integers sit
+  correctly at the same numeric anchor.
+- **Fast on large arrays**: the grid is virtual and keeps filtering/sorting in
+  a result index instead of rearranging the JSON data itself.
+- **Inline editing when you need it**: toggle edit mode with `Ctrl+E`, edit
+  scalar cells directly, insert structurally matching rows, delete rows or
+  columns, and save back with `Ctrl+S`.
+- **Keyboard-friendly grid work**: arrow keys move the current cell, scrolling
+  the view at the edges; `Ctrl+Arrow` jumps to the first or last row/column.
+- **Useful right-click tools**: copy cells, rows, columns, JSONPath, or inferred
+  JSON; hide columns; restore all columns; select the corresponding tree item.
+- **Comfort details**: automatic column sizing, alternating row colors,
+  current-cell highlighting, light/dark themes, configurable colors, UTF-8 and
+  UTF-16 detection, plus native Win32 and Win64 WLX builds without the LCL
+  runtime.
 
 ## Editing
 
