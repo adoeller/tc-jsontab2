@@ -1,5 +1,4 @@
 # JSON Tab WLX for Lazarus/FPC
-
 ![grid](json_grid.png)![text](json_text.png)
 
 JSON Tab WLX is a native Windows Lister plugin for
@@ -30,10 +29,11 @@ the result, edit a scalar value, copy exactly what you need, and move on.
   when the raw structure matters.
 - **JSONL feels like normal JSON**: `.jsonl` files are shown as one root array,
   while saving keeps the compact one-record-per-line format.
-- **Flat views for nested data**: `FlatViewLevel` can unfold uniform nested
-  objects and arrays into practical columns such as `message`,
-  `meta.message`, or `modulation_params.audio_freq`. The status bar shows the
-  active level, and `Flat: 1*` tells you when flattening is really in effect.
+- **Flat views for nested data**: `FlatViewLevel` unfolds nested objects and
+  arrays into practical columns such as `message`, `meta.message`, or
+  `modulation_params.audio_freq`. Optional missing leaf fields are filled with
+  the configured placeholder. The status bar marks exact matches as
+  `Flat: 1+` and softened matches as `Flat: 1*`.
 - **Filters that stay usable**: every column can be filtered with substring
   matching or operators like `=`, `!`, `<`, and `>`. The filter row follows
   horizontal scrolling and column resizing smoothly, so it keeps feeling like
