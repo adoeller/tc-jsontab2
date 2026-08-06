@@ -2,114 +2,195 @@
 
 ![grid](json_grid.png)![text](json_text.png)
 
-# Tempus — additions in this build
+JSON Tab WLX is a native Windows Lister plugin for
+[Total Commander](https://www.ghisler.com/) that displays JSON documents as a
+combined tree, table, and formatted text view.
 
-This build of the Tempus content plugin adds four things on top of the original
-(age/date, type, group columns): **Everything integration**, an **`ESize`** column,
-a **`Locked`** column, and a configurable **age pad character**. Everything is optional and
-off-by-default where it could surprise you; all of it is configured in `Tempus.ini`.
+Both regular JSON documents (`.json`) and JSON Lines documents (`.jsonl`) are
+supported. JSONL records are shown as the elements of one root array and are
+saved back as one compact JSON value per line.
 
----
+This project is a Lazarus/Free Pascal migration of the original
+[jsontab-wlx](https://github.com/little-brother/jsontab-wlx) plugin by
+little-brother. The original program established the user interface, behavior,
+and core feature set on which this port is based.
 
-## 1. Everything (voidtools) integration
+The migration keeps the familiar workflow and turns it into a faster, more
+interactive JSON workbench for Total Commander.
 
-Tempus can read [Everything](https://www.voidtools.com/)'s index over IPC to
-**(a)** get a folder's newest-descendant date without scanning the filesystem, and
-**(b)** show a folder's recursive size. **No extra DLL is shipped or required** —
-Tempus talks to a running Everything directly.
+## Feature Highlights
 
-### Requirements
+JSON Tab WLX is built for the moment when a JSON file is too structured for a
+plain text viewer, but too quick-and-dirty for a full editor. Open it in
+Lister, jump through the tree, flatten useful structures into columns, filter
+the result, edit a scalar value, copy exactly what you need, and move on.
 
-- **Everything must be running.** Download: [voidtools.com](https://www.voidtools.com/).
-- **Everything 1.4.1 or later.**
-- For **folder sizes** (the `ESize` field on folders): enable **"Index folder size"**
-  in Everything → **Tools → Options → Indexes**. Tempus checks this over IPC and only
-  reads folder sizes when it is actually on.
-- Junction/symlink paths (e.g. `C:\Dokumente und Einstellungen\...`) are resolved to
-  Everything's real target path automatically.
+- **Tree, table, and text at once**: browse objects and arrays in the tree,
+  inspect rows in the grid, and switch to syntax-highlighted formatted JSON
+  when the raw structure matters.
+- **JSONL feels like normal JSON**: `.jsonl` files are shown as one root array,
+  while saving keeps the compact one-record-per-line format.
+- **Flat views for nested data**: `FlatViewLevel` unfolds nested objects and
+  arrays into practical columns such as `message`, `meta.message`, or
+  `modulation_params.audio_freq`. Homogeneous scalar matrices are displayed
+  with one index column per inner-array position. Optional missing leaf fields
+  are filled with the configured placeholder. The status bar marks exact matches as
+  `Flat: 1+` and softened matches as `Flat: 1*`.
+- **Filters that stay usable**: every column can be filtered with substring
+  matching or operators like `=`, `!`, `<`, and `>`. The filter row follows
+  horizontal scrolling and column resizing smoothly, so it keeps feeling like
+  part of the grid.
+- **Sorting that understands data**: JSON numbers sort numerically, embedded
+  numbers sort naturally, and text sorting uses Windows locale-aware
+  comparison. A third click restores the original order.
+- **Readable numbers, even in proportional fonts**: decimal alignment is
+  enabled by default. Decimal separators line up per column, and integers sit
+  correctly at the same numeric anchor.
+- **Fast on large arrays**: the grid is virtual and keeps filtering/sorting in
+  a result index instead of rearranging the JSON data itself.
+- **Inline editing when you need it**: toggle edit mode with `Ctrl+E`, edit
+  scalar cells directly, insert structurally matching rows, delete rows or
+  columns, and save back with `Ctrl+S`.
+- **Keyboard-friendly grid work**: arrow keys move the current cell, scrolling
+  the view at the edges; `Ctrl+Arrow` jumps to the first or last row/column.
+- **Useful right-click tools**: copy cells, rows, columns, JSONPath, or inferred
+  JSON; hide columns; restore all columns; select the corresponding tree item.
+- **Comfort details**: automatic column sizing, alternating row colors,
+  current-cell highlighting, light/dark themes, configurable colors, UTF-8 and
+  UTF-16 detection, plus native Win32 and Win64 WLX builds without the LCL
+  runtime.
 
-### Keys (`[Everything]`)
+## Editing
 
-- `UseEverything=1` (default) — the folder-date fields (`Age (Update Dirs)` /
-  `Update Dirs Only`) get the newest descendant date from Everything's index instead
-  of scanning. Falls back to scanning when Everything is unavailable / the drive isn't
-  indexed. Only local fixed drives use the index.
-- `UseEverythingSize=0` (default) — the `ESize` field reads **folder** sizes from
-  Everything. Off by default; needs "Index folder size" enabled (see above).
-- `EverythingTimeoutMs=300` — per-query hard timeout so a stuck query can never
-  freeze TC.
-- `EverythingCacheTTLSec=30` — how long a folder date/size read from Everything stays
-  cached, so repeated queries during a panel render / repaint are instant. Cleared on
-  Ctrl+R.
+Press `Ctrl+E` or use **Edit mode** in the grid context menu to toggle editing.
+While edit mode is active, double-clicking a scalar cell opens an inline
+editor.
 
-SDK reference: [Everything SDK](https://www.voidtools.com/support/everything/sdk/).
+- `Enter` or focus loss accepts an edit
+- `Escape` cancels the active edit
+- `Ctrl+S` saves modified JSON back to the source file
+- Unsaved changes are marked in the status bar
+- The detected source-file encoding is retained when saving
+- Floating-point JSON values with a zero fractional part retain their decimal
+  form, for example `10000000.0`
 
----
+Arrays and objects remain read-only as cells; edit their scalar descendants
+instead.
 
-## 2. The `ESize` column
+## Keyboard And Mouse
 
-Add the column `[=tempus.ESize]`.
+| Action | Shortcut |
+| --- | --- |
+| Toggle edit mode | `Ctrl+E` |
+| Save changes | `Ctrl+S` |
+| Sort current column | `Ctrl+0` |
+| Sort visible column 1 through 9 | `Ctrl+1` through `Ctrl+9` |
+| Show all columns | `Ctrl+Space` |
+| Preserve matching filters during tree navigation | Hold `Ctrl+Shift` |
+| Change the current grid column | `Left` / `Right` |
+| Open a URL from the current cell | `Alt+Click` |
+| Change font size | `Ctrl+Mouse wheel` |
 
-- **Files** → native size (always, instantly).
-- **Folders** → recursive size from Everything, but only when `UseEverythingSize=1`
-  **and** "Index folder size" is enabled; otherwise the folder cell is left empty.
-- Offers the usual size units (bytes / KB / MB / GB), like TC's own size column.
+Additional Total Commander Lister keys are forwarded to the host where
+supported.
 
----
+## Context Menu
 
-## 3. The `Locked` column (files only)
+Right-click the grid to access:
 
-Add the column `[=tempus.Locked]`. Shows whether a **file** is currently in use by
-another task — modelled on the *LockedTest* plugin:
+- Copy
+- Copy row(s) (`Shift+C`)
+- Copy column (`Ctrl+C`)
+- Copy as JSON
+- Copy JSONPath
+- Hide column
+- Show all columns (`Ctrl+Space`)
+- Filters
+- Edit mode (`Ctrl+E`)
+- Dark theme
 
-- `Access` — the file can be opened (not locked).
-- `Locked` — another task holds it (open exclusively / for writing).
-- `Not found` — the file no longer exists.
-- Folders are left empty (files only).
+## Installation
 
-Detection = trying to open the file for reading with no sharing. It runs on a
-**background thread** so the UI never blocks; the fast checks (folder / not-found /
-cloud placeholder) answer instantly. **Cloud/offline placeholders are skipped** so
-browsing never triggers a download.
+Use the build matching your Total Commander installation:
 
-**Drive gating.** The open is cheap on local disks but a per-file network round-trip
-over SMB (and can spin up removable/optical media). So the probe runs on **fixed/RAM
-disks always**, but on **network / removable / CD-ROM only when explicitly enabled**;
-otherwise the column is simply left blank there — the gate fires *before* the file is
-touched. On network drives a short **result cache** (default 5 s) makes repaints reuse
-the last Access/Locked instead of re-opening every file; it's cleared on Ctrl+R.
+- `jsontab.wlx64` for 64-bit Total Commander
+- `jsontab.wlx` for 32-bit Total Commander
 
-### Keys
+Install the file as a Total Commander Lister plugin through:
 
-`[Options]`
-- `UseLockedField=1` (default) — enable the check. `0` leaves the column empty (the
-  check opens every listed file, which touches last-access time and can wake AV/sync).
+`Configuration` > `Options` > `Plugins` > `Lister plugins`
 
-`[Locked Field]`
-- `AllowDriveNetwork=0` / `AllowDriveRemovable=0` / `AllowDriveCDRom=0` (defaults) —
-  probe files on those drive types too. Fixed/RAM disks are always probed.
-- `NetCacheTTLSec=5` — network-only cache lifetime in seconds (`0` = off).
-- `Access=Access`, `Locked=Locked`, `NotFound=Not_found` — the value strings, and they
-  are **localizable** exactly like the age suffixes (`_` = space; a `<lang>_` variant
-  overrides when that `Language` is active). E.g. with `[Options] Language=deu` set
-  `deu_Access=Zugriff`, `deu_Locked=Gesperrt`, `deu_NotFound=Nicht_gefunden`.
+The default detection string handles files with the `.json` and `.jsonl`
+extensions.
 
----
+## Building
 
-## 4. Padding the age number
+Requirements:
 
-The age number can be left-padded so columns line up (`7 days` → ` 7 days`).
+- Lazarus with Free Pascal 3.2.2 or compatible
+- Windows target support for Win32 and/or Win64
 
-### Key (`[Age Field]`)
+Open `jsontab.lpi` in Lazarus and select one of the supplied build modes:
 
-- `AgeLeadingChar=_` — the pad character: `_` = **space** (default, `7 days` → ` 7 days`),
-  `0` = leading zeros (`07 days`), empty = no padding. The width follows the configured
-  threshold for each unit: `ThresholdDay=90` → 2 places, `ThresholdDay=180` → 3 places.
-  ('_' stands for a space, matching the ini's convention.)
+- `Release 64`, producing `jsontab.wlx64`
+- `Release 32`, producing `jsontab.wlx`
 
----
+Command-line builds:
 
-Install: close TC, copy `Tempus.wdx` (32-bit TC) and/or `Tempus.wdx64` into the
-plugin folder, restart TC, then add the columns via *Configuration → Options →
-Custom columns*.
+```powershell
+lazbuild jsontab.lpi --build-mode="Release 64"
+lazbuild jsontab.lpi --build-mode="Release 32"
+```
+
+## Configuration
+
+If an INI file exists beside the WLX plugin, it takes precedence over the
+default plugin INI path supplied by Total Commander. Otherwise, the supplied
+path is used. If Total Commander supplies no path, the INI beside the plugin is
+used and created when settings are written.
+
+Inline comments are supported when separated from the value by whitespace:
+
+```ini
+font-size=16 ; use a larger font
+```
+Settings belong in the `[jsontab]` section.
+
+The plugin stores the selected tab, splitter position, filter-row visibility,
+font size, and dark-theme state. It also supports configuration values inherited
+from the original plugin, including colors, filter behavior, font settings,
+missing-value text, parsing limits, and the detection string.
+
+Original layout and interaction settings are supported as well:
+
+- `copy-column`: copy the current column with plain `C` when multiple rows are
+  selected
+- `decimal-align`: align decimal values with `,` or `.` at their decimal
+  separator and right-align signed or unsigned integers (`0`/`1`, default `1`).
+  In columns containing both integers and decimals, integers end directly at
+  the shared decimal anchor.
+- `disable-grid-lines`: hide grid lines
+- `filter-align`: align filter text left (`-1`), centered (`0`), or right (`1`)
+- `font-weight`: select a font weight from `0` through `9`
+- `max-column-width`: limit automatic multi-column sizing; in two-column grids only the first column is capped, while the second uses its full measured header/content width
+
+Decimal alignment measures the integer part using the active grid font, so it
+also works with proportional fonts. Non-numeric values and values containing
+multiple decimal separators retain their normal display.
+
+## Tests
+
+- `tests/decimal_align_test.lpr` verifies decimal and integer recognition.
+- `tests/jsonl_model_test.lpr` verifies JSONL loading and saving.
+- `tests/wlx_viewer_test.lpr` loads the compiled WLX and exercises decimal
+  owner-draw after filtering, sorting, font zoom, editing, and structural tree
+  changes.
+
+## Original Project
+
+Original jsontab-WLX project:
+[github.com/little-brother/jsontab-wlx](https://github.com/little-brother/jsontab-wlx)
+
+Please refer to the original repository for its history, documentation, issue
+tracker, and releases.
 
