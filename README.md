@@ -1,7 +1,5 @@
 # JSON Tab WLX for Lazarus/FPC
 
-![grid](json_grid.png)![text](json_text.png)
-
 JSON Tab WLX is a native Windows Lister plugin for
 [Total Commander](https://www.ghisler.com/) that displays JSON documents as a
 combined tree, table, and formatted text view.
@@ -107,7 +105,7 @@ Right-click the grid to access:
 - Show all columns (`Ctrl+Space`)
 - Filters
 - Edit mode (`Ctrl+E`)
-- Dark theme
+- Theme: Total Commander, light, or dark
 
 ## Installation
 
@@ -157,12 +155,53 @@ font-size=16 ; use a larger font
 Settings belong in the `[jsontab]` section.
 
 The plugin stores the selected tab, splitter position, filter-row visibility,
-font size, and dark-theme state. It also supports configuration values inherited
-from the original plugin, including colors, filter behavior, font settings,
+font size, and theme mode. It also supports configuration values inherited from
+the original plugin, including colors, filter behavior, font settings,
 missing-value text, parsing limits, and the detection string.
+
+### Dark Mode
+
+Use `theme-mode` to select how the plugin chooses its colors:
+
+```ini
+[jsontab]
+theme-mode=tc       ; follow Total Commander (default)
+; theme-mode=light  ; always use the plugin's light colors
+; theme-mode=dark   ; always use the plugin's dark colors
+```
+
+- `tc` follows Total Commander through its `ListSendCommand` notifications.
+  Switching Total Commander between light and dark mode immediately updates an
+  open Lister window. On Windows 10/11, Total Commander's native-dark-mode
+  flag is also used for controls that support native dark rendering.
+- `light` and `dark` are persistent plugin choices. Theme changes in Total
+  Commander do not override them.
+- For older INI files without `theme-mode`, `dark-theme=0` selects light and
+  `dark-theme=1` selects dark. Once `theme-mode` is present, it takes
+  precedence.
+
+The usual color settings have a `-dark` counterpart, for example
+`back-color-dark`, `back-color2-dark`, `text-color-dark`,
+`filter-back-color-dark`, and `filter-text-color-dark`. They use Windows
+`COLORREF` decimal values, as shown in `jsontab_default.ini`.
+
+### Language
+
+`language=Auto` follows Total Commander's configured language when a matching
+catalog is available and otherwise uses the Windows UI language. A language
+can also be selected explicitly, for example `language=de` or `language=en`. If no
+matching catalog is available, the plugin falls back to English.
+
+English, German, Czech, Russian, and Ukrainian catalogs are included in the
+`language` directory. Additional UTF-8 catalogs can be added as
+`language/<code>.lng`; regional codes such as `de-DE` fall back to `de.lng`.
+Missing catalogs or individual entries fall back to the English strings built
+into the plugin.
 
 Original layout and interaction settings are supported as well:
 
+- `alwaysStartAtRoot`: always select `<<root>>` when loading (`0`/`1`,
+  default `0`). With `0`, the normal startup-selection rules apply.
 - `copy-column`: copy the current column with plain `C` when multiple rows are
   selected
 - `decimal-align`: align decimal values with `,` or `.` at their decimal
@@ -171,6 +210,7 @@ Original layout and interaction settings are supported as well:
   the shared decimal anchor.
 - `disable-grid-lines`: hide grid lines
 - `filter-align`: align filter text left (`-1`), centered (`0`), or right (`1`)
+- `language`: `Auto` or a language code such as `en`, `de`, `cs`, `ru`, or `uk`
 - `font-weight`: select a font weight from `0` through `9`
 - `max-column-width`: limit automatic multi-column sizing; in two-column grids only the first column is capped, while the second uses its full measured header/content width
 
@@ -193,4 +233,3 @@ Original jsontab-WLX project:
 
 Please refer to the original repository for its history, documentation, issue
 tracker, and releases.
-
