@@ -9,7 +9,7 @@ uses Windows, Classes, SysUtils, fpjson, jsonparser, jsonscanner;
 type
   TDetectedEncoding = (deAnsi, deUtf8, deUtf16LE, deUtf16BE);
 
-function LoadJsonFile(const FileName: UnicodeString; MaxSize, ParseMode: Integer;
+function LoadJsonFile(const FileName: UnicodeString; MaxSize: Int64; ParseMode: Integer;
   out Root: TJSONData; out EncodingName: UnicodeString;
   out Malformed: Boolean): Boolean;
 function SaveJsonFile(const FileName, EncodingName: UnicodeString;
@@ -17,6 +17,11 @@ function SaveJsonFile(const FileName, EncodingName: UnicodeString;
 function JsonTypeName(Data: TJSONData): UnicodeString;
 function JsonDisplayValue(Data: TJSONData): UnicodeString;
 function JsonPretty(Data: TJSONData): UnicodeString;
+function TryParse(const S: UTF8String; out Data: TJSONData): Boolean;
+function BytesToUtf8(const B: TBytes; Enc: TDetectedEncoding;
+  StripBom: Boolean = True): UTF8String;
+function MatchesFilter(const Value, Filter: UnicodeString;
+  CaseSensitive: Boolean): Boolean;
 
 implementation
 
@@ -157,8 +162,6 @@ begin
   PendingNumberLiteral := '';
 end;
 
-function TryParse(const S: UTF8String; out Data: TJSONData): Boolean; forward;
-
 function TryParseJsonLines(const S: UTF8String; out Data: TJSONData): Boolean;
 var
   I, StartPos: Integer;
@@ -225,19 +228,21 @@ begin
   if IsValidUtf8(B) then Result := deUtf8;
 end;
 
-function BytesToUtf8(const B: TBytes; Enc: TDetectedEncoding): UTF8String;
+function BytesToUtf8(const B: TBytes; Enc: TDetectedEncoding;
+  StripBom: Boolean): UTF8String;
 var
   I, Start: Integer;
   W: UnicodeString;
   A: AnsiString;
 begin
+  if Length(B) = 0 then Exit('');
   Start := 0;
-  if (Enc = deUtf8) and (Length(B) >= 3) and (B[0] = $EF) and
+  if StripBom and (Enc = deUtf8) and (Length(B) >= 3) and (B[0] = $EF) and
     (B[1] = $BB) and (B[2] = $BF) then Start := 3;
   if Enc in [deUtf16LE, deUtf16BE] then
   begin
     Start := 0;
-    if (Length(B) >= 2) and (((B[0] = $FF) and (B[1] = $FE)) or
+    if StripBom and (Length(B) >= 2) and (((B[0] = $FF) and (B[1] = $FE)) or
       ((B[0] = $FE) and (B[1] = $FF))) then Start := 2;
     SetLength(W, (Length(B) - Start) div 2);
     for I := 1 to Length(W) do
@@ -337,7 +342,7 @@ begin
   end;
 end;
 
-function LoadJsonFile(const FileName: UnicodeString; MaxSize, ParseMode: Integer;
+function LoadJsonFile(const FileName: UnicodeString; MaxSize: Int64; ParseMode: Integer;
   out Root: TJSONData; out EncodingName: UnicodeString;
   out Malformed: Boolean): Boolean;
 var
@@ -452,51 +457,58 @@ begin
   end;
 end;
 
-function JsonPrettyLevel(Data: TJSONData; Level: Integer): UnicodeString;
+procedure AppendPrettyJson(Builder: TUnicodeStringBuilder; Data: TJSONData;
+  Level: Integer);
 var
   I: Integer;
-  Indent, ChildIndent: UnicodeString;
-  Obj: TJSONObject;
+  ChildIndent: UnicodeString;
+  IsObject: Boolean;
 begin
-  Indent := StringOfChar(' ', Level * 2);
-  ChildIndent := StringOfChar(' ', (Level + 1) * 2);
   case Data.JSONType of
-    jtArray:
+    jtArray, jtObject:
       begin
-        if Data.Count = 0 then Exit('[]');
-        Result := '[' + LineEnding;
-        for I := 0 to Data.Count - 1 do
+        IsObject := Data.JSONType = jtObject;
+        if IsObject then Builder.Append('{')
+        else Builder.Append('[');
+        if Data.Count > 0 then
         begin
-          Result := Result + ChildIndent + JsonPrettyLevel(Data.Items[I], Level + 1);
-          if I < Data.Count - 1 then Result := Result + ',';
-          Result := Result + LineEnding;
+          Builder.Append(LineEnding);
+          ChildIndent := StringOfChar(' ', (Level + 1) * 2);
+          for I := 0 to Data.Count - 1 do
+          begin
+            Builder.Append(ChildIndent);
+            if IsObject then
+            begin
+              Builder.Append(QuoteJson(TJSONObject(Data).Names[I]));
+              Builder.Append(': ');
+            end;
+            AppendPrettyJson(Builder, Data.Items[I], Level + 1);
+            if I < Data.Count - 1 then Builder.Append(',');
+            Builder.Append(LineEnding);
+          end;
+          Builder.Append(StringOfChar(' ', Level * 2));
         end;
-        Result := Result + Indent + ']';
+        if IsObject then Builder.Append('}')
+        else Builder.Append(']');
       end;
-    jtObject:
-      begin
-        if Data.Count = 0 then Exit('{}');
-        Obj := TJSONObject(Data);
-        Result := '{' + LineEnding;
-        for I := 0 to Obj.Count - 1 do
-        begin
-          Result := Result + ChildIndent + QuoteJson(Obj.Names[I]) + ': ' +
-            JsonPrettyLevel(Obj.Items[I], Level + 1);
-          if I < Obj.Count - 1 then Result := Result + ',';
-          Result := Result + LineEnding;
-        end;
-        Result := Result + Indent + '}';
-      end;
-    jtString: Result := QuoteJson(Data.AsString);
-    jtNumber: Result := JsonNumberText(Data);
+    jtString: Builder.Append(QuoteJson(Data.AsString));
+    jtNumber: Builder.Append(JsonNumberText(Data));
   else
-    Result := UTF8Decode(Data.AsJSON);
+    Builder.Append(UTF8Decode(Data.AsJSON));
   end;
 end;
 
 function JsonPretty(Data: TJSONData): UnicodeString;
+var
+  Builder: TUnicodeStringBuilder;
 begin
-  Result := JsonPrettyLevel(Data, 0);
+  Builder := TUnicodeStringBuilder.Create;
+  try
+    AppendPrettyJson(Builder, Data, 0);
+    Result := Builder.ToString;
+  finally
+    Builder.Free;
+  end;
 end;
 
 function JsonCompact(Data: TJSONData): UnicodeString;
@@ -609,6 +621,35 @@ begin
   except
     Result := False;
   end;
+end;
+
+function MatchesFilter(const Value, Filter: UnicodeString;
+  CaseSensitive: Boolean): Boolean;
+var
+  V, F: UnicodeString;
+  DV, DF: Double;
+  FS: TFormatSettings;
+begin
+  if Filter = '' then Exit(True);
+  V := Value;
+  F := Filter;
+  if not CaseSensitive then
+  begin
+    V := LowerCase(V);
+    F := LowerCase(F);
+  end;
+  FS := DefaultFormatSettings;
+  FS.DecimalSeparator := '.';
+  if (Length(F) > 1) and (F[1] = '=') then Exit(V = Copy(F, 2, MaxInt));
+  if (Length(F) > 1) and (F[1] = '!') then Exit(Pos(Copy(F, 2, MaxInt), V) = 0);
+  if (Length(F) > 1) and (F[1] in ['<', '>']) and
+    TryStrToFloat(Copy(F, 2, MaxInt), DF, FS) and TryStrToFloat(V, DV, FS) then
+  begin
+    if F[1] = '<' then Exit(DV < DF) else Exit(DV > DF);
+  end;
+  if (Length(F) > 1) and (F[1] = '<') then Exit(V < Copy(F, 2, MaxInt));
+  if (Length(F) > 1) and (F[1] = '>') then Exit(V > Copy(F, 2, MaxInt));
+  Result := Pos(F, V) > 0;
 end;
 
 initialization

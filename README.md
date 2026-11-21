@@ -28,16 +28,9 @@ the result, edit a scalar value, copy exactly what you need, and move on.
   when the raw structure matters.
 - **JSONL feels like normal JSON**: `.jsonl` files are shown as one root array,
   while saving keeps the compact one-record-per-line format.
-- **Flat views for nested data**: `FlatViewLevel` unfolds nested objects and
-  arrays into practical columns such as `message`, `meta.message`, or
-  `modulation_params.audio_freq`. Homogeneous scalar matrices are displayed
-  with one index column per inner-array position. Optional missing leaf fields
-  are filled with the configured placeholder. The status bar marks exact matches as
-  `Flat: 1+` and softened matches as `Flat: 1*`.
-- **Filters that stay usable**: every column can be filtered with substring
-  matching or operators like `=`, `!`, `<`, and `>`. The filter row follows
-  horizontal scrolling and column resizing smoothly, so it keeps feeling like
-  part of the grid.
+- **Live filters**: choose a field and type to filter Grid and Text. Multiple
+  field filters combine. Standard mode supports comparison operators such as
+  `=`, `!`, `<` and `>`.
 - **Sorting that understands data**: JSON numbers sort numerically, embedded
   numbers sort naturally, and text sorting uses Windows locale-aware
   comparison. A third click restores the original order.
@@ -57,6 +50,17 @@ the result, edit a scalar value, copy exactly what you need, and move on.
   current-cell highlighting, light/dark themes, configurable colors, UTF-8 and
   UTF-16 detection, plus native Win32 and Win64 WLX builds without the LCL
   runtime.
+
+### Grouping records in the tree
+
+For JSONL and a JSON array at the document root, right-click the tree and choose
+**Group by \<field\>**. The menu lists scalar fields found in the records. Select
+a branch to see its records in the table, or the root to see all records.
+Missing fields and non-scalar values have their own branches, separate from
+JSON null. Use **File order** to return to the original tree.
+
+This view is read-only. Grouping leaves the original file and record order
+intact. The JSONPath of an individual record still refers to the original file.
 
 ## Editing
 
@@ -84,7 +88,6 @@ instead.
 | Sort current column | `Ctrl+0` |
 | Sort visible column 1 through 9 | `Ctrl+1` through `Ctrl+9` |
 | Show all columns | `Ctrl+Space` |
-| Preserve matching filters during tree navigation | Hold `Ctrl+Shift` |
 | Change the current grid column | `Left` / `Right` |
 | Open a URL from the current cell | `Alt+Click` |
 | Change font size | `Ctrl+Mouse wheel` |
@@ -159,6 +162,37 @@ font size, and theme mode. It also supports configuration values inherited from
 the original plugin, including colors, filter behavior, font settings,
 missing-value text, parsing limits, and the detection string.
 
+### Large JSON and JSONL
+
+Files above 5 MiB open in a read-only streaming viewer by default. It builds
+a temporary disk index in the background and loads visible rows on demand.
+The streaming viewer uses Windows SQLite (`winsqlite3.dll`) for its field and
+group indexes.
+
+```ini
+[jsontab]
+full-load-max-size = 5242880
+large-file-warning-size = 1073741824
+```
+
+A positive `full-load-max-size` overrides the old `max-file-size` limit.
+When a profile has only `max-file-size`, it keeps the earlier full-load limit.
+The warning applies to streaming files at or above
+`large-file-warning-size` (1 GiB by default).
+
+Select a field in **Group by** to build the group tree. Choose a column and
+type in the filter field. The filter applies after a short pause and matches
+values containing the entered text. Conditions on different columns are combined.
+Empty the field to remove that column's condition, or use **Clear all** to
+remove all filters.
+The **Text** tab opens the selected record or a page of records. **Previous**
+and **Next** move between pages or between fragments of a large record.
+**Refresh** checks for appended JSONL data or rebuilds the index after other
+file changes. The streaming viewer keeps records in file order.
+
+[Specification](docs/jsontab-large-files-spec.md) ·
+[Load test report](docs/jsontab-large-files-load-test.md)
+
 ### Dark Mode
 
 Use `theme-mode` to select how the plugin chooses its colors:
@@ -183,25 +217,21 @@ theme-mode=tc       ; follow Total Commander (default)
 The usual color settings have a `-dark` counterpart, for example
 `back-color-dark`, `back-color2-dark`, `text-color-dark`,
 `filter-back-color-dark`, and `filter-text-color-dark`. They use Windows
-`COLORREF` decimal values, as shown in `jsontab_default.ini`.
+`COLORREF` decimal values.
 
-### Language
+### Settings and language
 
-`language=Auto` follows Total Commander's configured language when a matching
-catalog is available and otherwise uses the Windows UI language. A language
-can also be selected explicitly, for example `language=de` or `language=en`. If no
-matching catalog is available, the plugin falls back to English.
+Use the gear button in either viewer to change the theme, font, filter case
+sensitivity and file-size thresholds. The dialog shows the current INI path.
+The folder button opens the directory in the active Total Commander tab, and
+the edit button opens the file in the configured F4 editor.
 
-English, German, Czech, Russian, and Ukrainian catalogs are included in the
-`language` directory. Additional UTF-8 catalogs can be added as
-`language/<code>.lng`; regional codes such as `de-DE` fall back to `de.lng`.
-Missing catalogs or individual entries fall back to the English strings built
-into the plugin.
+JsonTab reads `LanguageINI` from the active Total Commander profile when
+`COMMANDER_INI` is available. It uses Russian for the Russian profile and
+English for other profiles.
 
 Original layout and interaction settings are supported as well:
 
-- `alwaysStartAtRoot`: always select `<<root>>` when loading (`0`/`1`,
-  default `0`). With `0`, the normal startup-selection rules apply.
 - `copy-column`: copy the current column with plain `C` when multiple rows are
   selected
 - `decimal-align`: align decimal values with `,` or `.` at their decimal
@@ -209,8 +239,6 @@ Original layout and interaction settings are supported as well:
   In columns containing both integers and decimals, integers end directly at
   the shared decimal anchor.
 - `disable-grid-lines`: hide grid lines
-- `filter-align`: align filter text left (`-1`), centered (`0`), or right (`1`)
-- `language`: `Auto` or a language code such as `en`, `de`, `cs`, `ru`, or `uk`
 - `font-weight`: select a font weight from `0` through `9`
 - `max-column-width`: limit automatic multi-column sizing; in two-column grids only the first column is capped, while the second uses its full measured header/content width
 
@@ -220,11 +248,10 @@ multiple decimal separators retain their normal display.
 
 ## Tests
 
-- `tests/decimal_align_test.lpr` verifies decimal and integer recognition.
-- `tests/jsonl_model_test.lpr` verifies JSONL loading and saving.
-- `tests/wlx_viewer_test.lpr` loads the compiled WLX and exercises decimal
-  owner-draw after filtering, sorting, font zoom, editing, and structural tree
-  changes.
+The [large-file tests](tests/large-files) include JSON and JSONL fixture
+generators, a Pascal streaming benchmark and a WLX test host. See the
+[load-test report](docs/jsontab-large-files-load-test.md) for the test inputs,
+environment and results.
 
 ## Original Project
 

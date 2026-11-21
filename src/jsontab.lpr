@@ -19,7 +19,8 @@ exports
   plugin_main.ListGetDetectString name 'ListGetDetectString',
   plugin_main.ListSetDefaultParams name 'ListSetDefaultParams',
   plugin_main.ListSearchText name 'ListSearchText',
-  plugin_main.ListSearchTextW name 'ListSearchTextW';
+  plugin_main.ListSearchTextW name 'ListSearchTextW',
+  plugin_main.ListSendCommand name 'ListSendCommand';
 
 {$R *.res}
 
