@@ -11,6 +11,8 @@ const
   lcs_matchcase = 2;
   lcs_wholewords = 4;
   lcs_backwards = 8;
+  lc_newparams = 2;
+  lcp_darkmode = 128;
 
 type
   TListDefaultParamStruct = record

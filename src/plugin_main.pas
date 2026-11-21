@@ -11,16 +11,40 @@ function ListLoadW(ParentWin: HWND; FileToLoad: PWideChar; ShowFlags: Integer): 
 procedure ListCloseWindow(ListWin: HWND); stdcall;
 procedure ListGetDetectString(DetectString: PAnsiChar; MaxLen: Integer); stdcall;
 procedure ListSetDefaultParams(Dps: PListDefaultParamStruct); stdcall;
+function ListSendCommand(ListWin: HWND; Command, Parameter: Integer): Integer; stdcall;
 function ListSearchText(ListWin: HWND; SearchString: PAnsiChar; SearchParameter: Integer): Integer; stdcall;
 function ListSearchTextW(ListWin: HWND; SearchString: PWideChar; SearchParameter: Integer): Integer; stdcall;
 
 implementation
 
-uses uSettings, uViewer;
+uses uSettings, uViewer, uLargeViewer, uLocale;
+
+function ListSendCommand(ListWin: HWND; Command, Parameter: Integer): Integer; stdcall;
+begin
+  Result := 1;  // LISTPLUGIN_ERROR
+  if Command = lc_newparams then
+  begin
+    if IsLargeViewer(ListWin) then SetLargeShowFlags(ListWin, Parameter)
+    else SetJsonViewerShowFlags(ListWin, Parameter);
+    Result := 0;  // LISTPLUGIN_OK
+  end;
+end;
 
 function ListLoadW(ParentWin: HWND; FileToLoad: PWideChar; ShowFlags: Integer): HWND; stdcall;
+var St: WIN32_FILE_ATTRIBUTE_DATA;
+    Size, Threshold: Int64;
+    Streaming: Boolean;
 begin
-  Result := CreateJsonViewer(ParentWin, FileToLoad, ShowFlags);
+  Result := 0;
+  if FileToLoad = nil then Exit;
+  InitViewerLanguage;
+  Streaming := LargeFileThreshold(Threshold);
+  if Streaming and GetFileAttributesExW(FileToLoad, GetFileExInfoStandard, @St) then
+  begin
+    Size := (Int64(St.nFileSizeHigh) shl 32) or St.nFileSizeLow;
+    if Size > Threshold then Exit(CreateLargeViewer(ParentWin, FileToLoad, Size, ShowFlags));
+  end;
+  Result := CreateJsonViewer(ParentWin, FileToLoad, ShowFlags, Threshold);
 end;
 
 function ListLoad(ParentWin: HWND; FileToLoad: PAnsiChar; ShowFlags: Integer): HWND; stdcall;
@@ -30,7 +54,7 @@ end;
 
 procedure ListCloseWindow(ListWin: HWND); stdcall;
 begin
-  CloseJsonViewer(ListWin);
+  if IsLargeViewer(ListWin) then CloseLargeViewer(ListWin) else CloseJsonViewer(ListWin);
 end;
 
 procedure ListGetDetectString(DetectString: PAnsiChar; MaxLen: Integer); stdcall;
@@ -50,7 +74,8 @@ end;
 
 function ListSearchTextW(ListWin: HWND; SearchString: PWideChar; SearchParameter: Integer): Integer; stdcall;
 begin
-  Result := SearchJsonViewer(ListWin, SearchString, SearchParameter);
+  if IsLargeViewer(ListWin) then Result := SearchLargeViewer(ListWin, SearchString, SearchParameter)
+  else Result := SearchJsonViewer(ListWin, SearchString, SearchParameter);
 end;
 
 function ListSearchText(ListWin: HWND; SearchString: PAnsiChar; SearchParameter: Integer): Integer; stdcall;
